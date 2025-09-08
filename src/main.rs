@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 mod ui;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, fmt::Write, rc::Rc};
 
 use anyhow::{Result, anyhow, bail};
 use maud::{Render, html};
@@ -119,6 +119,11 @@ impl From<&str> for ShipAddError {
     }
 }
 
+struct ShipDefinition {
+    length: u8,
+    count: u8,
+}
+
 impl BoardBuilder {
     fn new(bounds: Bounds) -> Self {
         let state = (0..=bounds.x)
@@ -136,6 +141,10 @@ impl BoardBuilder {
                 state,
             },
         }
+    }
+
+    fn square(n: u8) -> Self {
+        Self::new(Bounds { x: n, y: n })
     }
 
     fn add_ship(&mut self, points: Vec<Point>) -> Result<(), ShipAddError> {
@@ -200,7 +209,6 @@ impl BoardBuilder {
         static TRIES: u16 = 1000;
 
         for _ in 0..1000 {
-            // Choose random orientation (0 = horizontal, 1 = vertical)
             let horizontal = rng.random_bool(0.5);
 
             let (dx, dy) = if horizontal { (length, 1) } else { (1, length) };
@@ -215,16 +223,12 @@ impl BoardBuilder {
             // Generate ship points
             let points: Vec<Point> = (0..length)
                 .map(|i| {
-                    if horizontal {
-                        Point {
-                            x: (start_x + i),
-                            y: start_y,
-                        }
-                    } else {
-                        Point {
-                            x: start_x,
-                            y: (start_y + i),
-                        }
+                    // Add length according to orientation
+                    let (dx, dy) = if horizontal { (i, 0) } else { (0, i) };
+
+                    Point {
+                        x: start_x + dx,
+                        y: start_y + dy,
                     }
                 })
                 .collect();
@@ -235,6 +239,19 @@ impl BoardBuilder {
             }
         }
         bail!("Couldn't place a ship after {TRIES} attempts")
+    }
+
+    fn random(&mut self, ship_defs: &[ShipDefinition]) -> Result<()> {
+        for ship_def in ship_defs {
+            for _ in 0..ship_def.count {
+                self.add_ship_random(rand::rng(), ship_def.length)?
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self) -> Board {
+        self.inner
     }
 }
 
@@ -275,14 +292,59 @@ impl Board {
     }
 }
 
-impl Render for Board {
-    fn render(&self) -> maud::Markup {
-        html! {
-            table ;
+// impl Render for Board {
+//     fn render(&self) -> maud::Markup {
+//         for row in self.state {
+//             for cell in row {
+//                 match cell
+//             }
+//         }
+//     }
+// }
+
+impl Board {
+    fn cli_render(&self) {
+        for row in self.state.clone() {
+            let mut row_rend = Vec::new();
+
+            for cell in row {
+                let cell = cell.borrow();
+                let cell_rend = match cell.content {
+                    CellContent::Water => "W",
+                    CellContent::NearShip(_) => "N",
+                    CellContent::Ship(_) => "S",
+                };
+                row_rend.push(if cell.hit {
+                    "(".to_owned() + cell_rend + ")"
+                } else {
+                    "[-]".to_owned()
+                })
+            }
+
+            println!("{}", row_rend.join(" "))
         }
     }
 }
 
 fn main() -> Result<()> {
-    todo!()
+    let mut board = BoardBuilder::square(10);
+    board.random(&[ShipDefinition {
+        length: 2,
+        count: 5,
+    }])?;
+
+    let board = board.build();
+
+    board.cli_render();
+    println!("\n\n");
+
+    for x in 1..5 {
+        for y in 1..5 {
+            board.hit(Point { x, y });
+        }
+    }
+
+    board.cli_render();
+
+    Ok(())
 }
