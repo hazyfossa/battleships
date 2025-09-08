@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 mod ui;
 
-use std::cell::RefCell;
-
 use anyhow::{Result, anyhow, bail};
 use maud::{Render, html};
 use shrinkwraprs::Shrinkwrap;
@@ -140,7 +138,7 @@ impl BoardBuilder<'_> {
                     if let Some(adjacent_point) = point.clone_with_delta(dx, dy) {
                         // Only add if it's not part of the ship itself
                         if !points.contains(&adjacent_point) {
-                            if let Some(cell) = self.inner.get_cell(&adjacent_point) {
+                            if let Some(ref cell) = self.inner.get_cell(&adjacent_point) {
                                 if cell.get_ship().is_some() {
                                     return Err(ShipAddError::Collision {
                                         point: adjacent_point,
@@ -200,7 +198,7 @@ impl<'a> Board<'a> {
 
         Ok(match cell.get_ship() {
             None => (),
-            Some(ship) => {
+            Some(ref mut ship) => {
                 let has_sank = ship.hit();
                 if has_sank {
                     for cell in &mut ship.nearby_cells {
