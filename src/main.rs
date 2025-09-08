@@ -1,15 +1,24 @@
 #![allow(dead_code)]
-mod ui;
+mod asset_utils;
 
 use std::{cell::RefCell, collections::HashSet, hash::Hash, ops::SubAssign, rc::Rc};
 
-use anyhow::{Result, anyhow, bail};
-use maud::{Render, html};
+use anyhow::{Context, Result, anyhow, bail};
+
+use axum::{Router, routing::get};
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+
+use maud::{Markup, Render, html};
 use rand::Rng;
+
 use shrinkwraprs::Shrinkwrap;
 
-// TODO: this ideally shouldn't exist
+use crate::asset_utils::asset_handler;
+
 type Dyn<T> = Rc<RefCell<T>>;
+
+// TODO: I suspect x/y cooors on board are rotated and what we call row is actually a column
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Point {
@@ -18,11 +27,31 @@ struct Point {
 }
 
 impl Point {
+    fn new(x: u8, y: u8) -> Self {
+        Self { x, y }
+    }
+
+    fn from_index(x: usize, y: usize) -> Self {
+        Self::new(x as u8, y as u8)
+    }
+
     fn try_add_delta(&self, dx: isize, dy: isize) -> Option<Self> {
         Some(Point {
             x: (self.x as isize + dx).try_into().ok()?,
             y: (self.y as isize + dy).try_into().ok()?,
         })
+    }
+
+    fn serialize(&self) -> String {
+        format!("{}-{}", self.x, self.y)
+    }
+
+    fn deserialize(value: String) -> Result<Self> {
+        let (x, y) = value
+            .split_once("-")
+            .ok_or(anyhow!("Delimeter not found"))?;
+
+        Ok(Self::new(x.parse()?, y.parse()?))
     }
 }
 
@@ -35,6 +64,13 @@ enum CellContent {
 }
 
 impl CellContent {
+    fn contains_ship(&self) -> bool {
+        match self {
+            Self::Ship(_) => true,
+            _ => false,
+        }
+    }
+
     fn get_ship(&mut self) -> Option<Dyn<Ship>> {
         match self {
             Self::Ship(ship) => Some(ship.clone()),
@@ -96,8 +132,7 @@ struct Ship {
 }
 
 impl Ship {
-    pub fn hit(&mut self) {
-        dbg!("hit");
+    fn hit(&mut self) {
         match self.length.checked_sub(1) {
             None => return, // Ship already sank
             Some(new_len) => {
@@ -111,7 +146,7 @@ impl Ship {
     }
 
     #[inline]
-    pub fn has_sank(&self) -> bool {
+    fn has_sank(&self) -> bool {
         self.length == 0
     }
 
@@ -130,8 +165,19 @@ type Vec2D<T> = Vec<Vec<T>>;
 #[shrinkwrap(mutable)]
 struct ShipCounter {
     name: String,
+    total: u8,
     #[shrinkwrap(main_field)]
     remaining: u8,
+}
+
+impl ShipCounter {
+    fn new(name: String, n: u8) -> Self {
+        Self {
+            name,
+            total: n,
+            remaining: n,
+        }
+    }
 }
 
 struct Board {
@@ -182,10 +228,7 @@ struct ShipDefinition {
 
 impl ShipDefinition {
     fn to_counter(self) -> ShipCounter {
-        ShipCounter {
-            name: self.name,
-            remaining: self.count,
-        }
+        ShipCounter::new(self.name, self.count)
     }
 }
 
@@ -231,7 +274,7 @@ impl BoardBuilder {
                 .get_cell(&point)
                 .ok_or(ShipAddError::OutOfBounds)?;
 
-            if cell.borrow_mut().get_ship().is_some() {
+            if cell.borrow().contains_ship() {
                 return Err(ShipAddError::Collision { point }); // TODO: maybe return ship here
             }
 
@@ -249,7 +292,7 @@ impl BoardBuilder {
                             tried_points.insert(adjacent_point);
 
                             if let Some(cell) = self.inner.get_cell(&adjacent_point) {
-                                if cell.borrow_mut().get_ship().is_some() {
+                                if cell.borrow().contains_ship() {
                                     return Err(ShipAddError::Collision {
                                         point: adjacent_point,
                                     });
@@ -286,23 +329,18 @@ impl BoardBuilder {
         todo!()
     }
 
-    fn add_ship_random(&mut self, mut rng: impl Rng, definition: &ShipDefinition) -> Result<()> {
-        self.inner
-            .ship_counters
-            .push(Rc::new(RefCell::new(definition.clone().to_counter())));
-
-        let counter = self.inner.ship_counters.last().unwrap().clone();
-
+    fn add_ship_random(
+        &mut self,
+        mut rng: impl Rng,
+        length: u8,
+        counter: &Dyn<ShipCounter>,
+    ) -> Result<()> {
         static TRIES: u16 = 1000;
 
-        for _ in 0..1000 {
+        for ship_add_try in 0..1000 {
             let horizontal = rng.random_bool(0.5);
 
-            let (dx, dy) = if horizontal {
-                (definition.length, 1)
-            } else {
-                (1, definition.length)
-            };
+            let (dx, dy) = if horizontal { (length, 1) } else { (1, length) };
             let bounds = Bounds {
                 x: self.bounds.x.saturating_sub(dx.into()),
                 y: self.bounds.y.saturating_sub(dy.into()),
@@ -311,7 +349,7 @@ impl BoardBuilder {
             let start_x = rng.random_range(0..=bounds.x);
             let start_y = rng.random_range(0..=bounds.y);
 
-            let points: Vec<Point> = (0..definition.length)
+            let points: Vec<Point> = (0..length)
                 .map(|i| {
                     // Add length according to orientation
                     let (dx, dy) = if horizontal { (i, 0) } else { (0, i) };
@@ -324,7 +362,10 @@ impl BoardBuilder {
                 .collect();
 
             match self.add_ship_instance(&counter, points) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    dbg!(ship_add_try);
+                    return Ok(());
+                }
                 Err(_) => continue, // Try again with different position
             }
         }
@@ -333,8 +374,14 @@ impl BoardBuilder {
 
     fn random(&mut self, ships: &[ShipDefinition]) -> Result<()> {
         for ship in ships {
+            self.inner
+                .ship_counters
+                .push(Rc::new(RefCell::new(ship.clone().to_counter())));
+
+            let counter = self.inner.ship_counters.last().unwrap().clone();
+
             for _ in 0..ship.count {
-                self.add_ship_random(rand::rng(), ship)?
+                self.add_ship_random(rand::rng(), ship.length, &counter)?
             }
         }
         Ok(())
@@ -344,16 +391,6 @@ impl BoardBuilder {
         self.inner
     }
 }
-
-// impl Render for Board {
-//     fn render(&self) -> maud::Markup {
-//         for row in self.state {
-//             for cell in row {
-//                 match cell
-//             }
-//         }
-//     }
-// }
 
 impl Board {
     fn cli_render(&self) {
@@ -379,26 +416,94 @@ impl Board {
     }
 }
 
-fn main() -> Result<()> {
+impl Board {
+    fn render(&self, id: u32) -> Markup {
+        html! {
+            #stats-container {
+                @for counter in &self.ship_counters {
+                    (counter.borrow().render())
+                }
+            }
+
+            table #board {
+                tbody {
+                    @for (x, row) in self.state.iter().enumerate() {
+                        tr {
+                            @for (y, cell) in row.iter().enumerate() {
+                                (cell.borrow().render(id, x, y))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl CellState {
+    fn render(&self, id: u32, x: usize, y: usize) -> Markup {
+        html!({
+            @if self.exposed {
+                td class={"reveal" @if self.contains_ship() {"ship"} @else {"water"}};
+            } @else {
+                td .active-cell
+                hx-post={"/board/" (id) "/" (Point::from_index(x, y).serialize())}
+                hx-swap="outerHtml"
+                hx-target="#board";
+            }
+        }
+        )
+    }
+}
+
+impl Render for ShipCounter {
+    fn render(&self) -> Markup {
+        html!(.ship-counter {
+            .cnt-name {(self.name)}
+            .cnt-row {
+                .cnt-total {(self.total)} "/" .cnt-remaining {(self.remaining)}
+            }
+        })
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let html = |board: &Board| {
+        html!(
+            (maud::DOCTYPE)
+            html lang="ru" {
+                head {
+                    meta charset="UTF-8";
+                    meta name="viewport" content="width=device-width, initial-scale=1.0";
+                    link rel="stylesheet" href ="vendor/normalize.min.css";
+                    link rel="stylesheet" href="ui.css";
+                    // script src="vendor/htmx.min.js";
+                }
+
+                body {
+                    #container {(board.render(1))}
+                }
+            }
+        )
+    };
+
     let mut board = BoardBuilder::square(10);
     board.random(&[ShipDefinition {
-        length: 2,
+        length: 3,
         count: 5,
         name: "test".to_string(),
     }])?;
 
     let board = board.build();
 
-    board.cli_render();
-    println!("\n\n");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .context("Failed to bind listener")?;
 
-    for x in 1..5 {
-        for y in 1..5 {
-            board.hit(Point { x, y });
-        }
-    }
+    let router = Router::new()
+        .route("/assets", get(asset_handler))
+        .layer(ServiceBuilder::new().layer(CompressionLayer::new()));
 
-    board.cli_render();
-
-    Ok(())
+    Ok(axum::serve(listener, router).await.unwrap())
 }

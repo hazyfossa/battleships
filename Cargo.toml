@@ -5,7 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
-build_html = "2.7.0"
-maud = "0.27.0"
+axum = "0.8.4"
+maud = { version = "0.27.0", features = ["axum"] }
+mime_guess = "2.0.5"
 rand = "0.9.2"
+rust-embed = { version = "8.7.2", features = ["axum"] }
 shrinkwraprs = "0.3.0"
+tokio = { version = "1.47.1", features = ["full"] }
+tower = { version = "0.5.2", features = ["tokio"] }
+tower-http = { version = "0.6.6", features = ["compression-br"] }
