@@ -1,9 +1,13 @@
 #![allow(dead_code)]
 mod ui;
 
+use std::{cell::RefCell, rc::Rc};
+
 use anyhow::{Result, anyhow, bail};
 use maud::{Render, html};
 use shrinkwraprs::Shrinkwrap;
+
+type Dyn<T> = Rc<RefCell<T>>;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Point {
@@ -20,24 +24,24 @@ impl Point {
     }
 }
 
-enum CellContent<'a> {
+enum CellContent {
     Water,
-    NearShip(&'a mut Ship<'a>),
-    Ship(&'a mut Ship<'a>),
+    NearShip(Dyn<Ship>),
+    Ship(Dyn<Ship>),
 }
 
-impl<'a> CellContent<'a> {
-    fn get_ship(&mut self) -> Option<&'a mut Ship> {
+impl CellContent {
+    fn get_ship(&mut self) -> Option<Dyn<Ship>> {
         match self {
-            Self::Ship(ship) => Some(ship),
+            Self::Ship(ship) => Some(ship.clone()),
             _ => None,
         }
     }
 
-    fn get_collision(&self) -> Option<&'a Ship> {
+    fn get_collision(&self) -> Option<Dyn<Ship>> {
         match self {
-            Self::Ship(ship) => Some(ship),
-            Self::NearShip(ship) => Some(ship),
+            Self::Ship(ship) => Some(ship.clone()),
+            Self::NearShip(ship) => Some(ship.clone()),
             _ => None,
         }
     }
@@ -45,13 +49,28 @@ impl<'a> CellContent<'a> {
 
 #[derive(Shrinkwrap)]
 #[shrinkwrap(mutable)]
-struct CellState<'a> {
+struct CellState {
     #[shrinkwrap(main_field)]
-    content: CellContent<'a>,
+    content: CellContent,
     hit: bool,
 }
 
-impl Default for CellState<'_> {
+impl CellState {
+    fn hit(&mut self) -> Result<()> {
+        if self.hit {
+            bail!("Cell already hit")
+        } else {
+            self.hit = true
+        };
+        Ok(())
+    }
+
+    fn hit_if_not_already(&mut self) {
+        self.hit = true
+    }
+}
+
+impl Default for CellState {
     fn default() -> Self {
         Self {
             content: CellContent::Water,
@@ -60,12 +79,12 @@ impl Default for CellState<'_> {
     }
 }
 
-struct Ship<'a> {
+struct Ship {
     length: u8,
-    nearby_cells: Vec<&'a mut CellState<'a>>,
+    nearby_cells: Vec<Dyn<CellState>>,
 }
 
-impl<'a> Ship<'a> {
+impl Ship {
     fn hit(&mut self) -> bool {
         let new_len = self.length.checked_sub(1);
 
@@ -79,9 +98,9 @@ impl<'a> Ship<'a> {
     }
 }
 
-struct BoardBuilder<'a> {
+struct BoardBuilder {
     bounds: Point,
-    inner: Board<'a>,
+    inner: Board,
 }
 
 enum ShipAddError {
@@ -96,12 +115,12 @@ impl From<&str> for ShipAddError {
     }
 }
 
-impl BoardBuilder<'_> {
+impl BoardBuilder {
     fn new(bounds: Point) -> Self {
         #[rustfmt::skip]
         let state = (0..=bounds.x)
             .map(|_| (0..=bounds.y)
-                .map(|_| CellState::default())
+                .map(|_| Rc::new(RefCell::new(CellState::default())))
             .collect())
         .collect();
 
@@ -128,7 +147,7 @@ impl BoardBuilder<'_> {
                 .get_cell(&point)
                 .ok_or(ShipAddError::OutOfBounds)?;
 
-            if cell.get_ship().is_some() {
+            if cell.borrow_mut().get_ship().is_some() {
                 return Err(ShipAddError::Collision { point }); // TODO: maybe return ship here
             }
 
@@ -138,8 +157,8 @@ impl BoardBuilder<'_> {
                     if let Some(adjacent_point) = point.clone_with_delta(dx, dy) {
                         // Only add if it's not part of the ship itself
                         if !points.contains(&adjacent_point) {
-                            if let Some(ref cell) = self.inner.get_cell(&adjacent_point) {
-                                if cell.get_ship().is_some() {
+                            if let Some(cell) = self.inner.get_cell(&adjacent_point) {
+                                if cell.borrow_mut().get_ship().is_some() {
                                     return Err(ShipAddError::Collision {
                                         point: adjacent_point,
                                     });
@@ -155,18 +174,18 @@ impl BoardBuilder<'_> {
         }
 
         // No collisions detected, proceed with placing the ship
-        self.inner.ships.push(Ship {
+        self.inner.ships.push(Rc::new(RefCell::new(Ship {
             length: points.len() as u8,
-            nearby_cells: near_cells,
-        });
-        let ship = self.inner.ships.last_mut().unwrap(); // TODO: is this always safe
+            nearby_cells: near_cells.clone(),
+        })));
+        let ship = self.inner.ships.last().unwrap(); // TODO: is this always safe
 
         for cell in ship_cells {
-            cell.content = CellContent::Ship(ship)
+            cell.borrow_mut().content = CellContent::Ship(ship.clone())
         }
 
         for cell in near_cells {
-            cell.content = CellContent::NearShip(ship)
+            cell.borrow_mut().content = CellContent::NearShip(ship.clone())
         }
 
         Ok(())
@@ -175,34 +194,31 @@ impl BoardBuilder<'_> {
 
 type Vec2D<T> = Vec<Vec<T>>;
 
-pub struct Board<'board> {
-    ships: Vec<Ship<'board>>,
-    state: Vec2D<CellState<'board>>,
+pub struct Board {
+    ships: Vec<Dyn<Ship>>,
+    state: Vec2D<Dyn<CellState>>,
 }
 
-impl<'a> Board<'a> {
-    fn get_cell(&mut self, point: &Point) -> Option<&'a mut CellState> {
-        self.state.get_mut(point.x)?.get_mut(point.y)
+impl Board {
+    fn get_cell(&self, point: &Point) -> Option<Dyn<CellState>> {
+        self.state.get(point.x)?.get(point.y).cloned()
     }
 
-    pub fn hit(&'a mut self, point: Point) -> Result<()> {
+    fn hit(&self, point: Point) -> Result<()> {
         let cell = self
             .get_cell(&point)
             .ok_or(anyhow!("Invalid cell coordinates"))?;
 
-        if cell.hit {
-            bail!("Cell already hit")
-        } else {
-            cell.hit = true
-        };
+        cell.borrow_mut().hit()?;
 
-        Ok(match cell.get_ship() {
+        Ok(match cell.borrow_mut().get_ship() {
             None => (),
-            Some(ref mut ship) => {
+            Some(ship) => {
+                let mut ship = ship.borrow_mut();
                 let has_sank = ship.hit();
                 if has_sank {
-                    for cell in &mut ship.nearby_cells {
-                        cell.hit = true;
+                    for cell in &ship.nearby_cells {
+                        cell.borrow_mut().hit_if_not_already();
                     }
                 }
             }
@@ -210,7 +226,7 @@ impl<'a> Board<'a> {
     }
 }
 
-impl Render for Board<'_> {
+impl Render for Board {
     fn render(&self) -> maud::Markup {
         html! {
             table ;
