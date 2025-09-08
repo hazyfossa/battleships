@@ -5,14 +5,16 @@ use std::{cell::RefCell, rc::Rc};
 
 use anyhow::{Result, anyhow, bail};
 use maud::{Render, html};
+use rand::Rng;
 use shrinkwraprs::Shrinkwrap;
 
+// TODO: this ideally shouldn't exist
 type Dyn<T> = Rc<RefCell<T>>;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Point {
-    x: usize,
-    y: usize,
+    x: u8,
+    y: u8,
 }
 
 impl Point {
@@ -23,6 +25,8 @@ impl Point {
         })
     }
 }
+
+type Bounds = Point; // Bounds are just the maximum point in both coordinates
 
 enum CellContent {
     Water,
@@ -116,13 +120,14 @@ impl From<&str> for ShipAddError {
 }
 
 impl BoardBuilder {
-    fn new(bounds: Point) -> Self {
-        #[rustfmt::skip]
+    fn new(bounds: Bounds) -> Self {
         let state = (0..=bounds.x)
-            .map(|_| (0..=bounds.y)
-                .map(|_| Rc::new(RefCell::new(CellState::default())))
-            .collect())
-        .collect();
+            .map(|_| {
+                (0..=bounds.y)
+                    .map(|_| Rc::new(RefCell::new(CellState::default())))
+                    .collect()
+            })
+            .collect();
 
         Self {
             bounds,
@@ -133,7 +138,7 @@ impl BoardBuilder {
         }
     }
 
-    pub fn add_ship(&mut self, points: Vec<Point>) -> Result<(), ShipAddError> {
+    fn add_ship(&mut self, points: Vec<Point>) -> Result<(), ShipAddError> {
         if points.is_empty() {
             return Err("Ship requires at least one point".into());
         };
@@ -190,18 +195,62 @@ impl BoardBuilder {
 
         Ok(())
     }
+
+    fn add_ship_random(&mut self, mut rng: impl Rng, length: u8) -> Result<()> {
+        static TRIES: u16 = 1000;
+
+        for _ in 0..1000 {
+            // Choose random orientation (0 = horizontal, 1 = vertical)
+            let horizontal = rng.random_bool(0.5);
+
+            let (dx, dy) = if horizontal { (length, 1) } else { (1, length) };
+            let bounds = Bounds {
+                x: self.bounds.x.saturating_sub(dx.into()),
+                y: self.bounds.y.saturating_sub(dy.into()),
+            };
+
+            let start_x = rng.random_range(0..=bounds.x);
+            let start_y = rng.random_range(0..=bounds.y);
+
+            // Generate ship points
+            let points: Vec<Point> = (0..length)
+                .map(|i| {
+                    if horizontal {
+                        Point {
+                            x: (start_x + i),
+                            y: start_y,
+                        }
+                    } else {
+                        Point {
+                            x: start_x,
+                            y: (start_y + i),
+                        }
+                    }
+                })
+                .collect();
+
+            match self.add_ship(points) {
+                Ok(()) => return Ok(()),
+                Err(_) => continue, // Try again with different position
+            }
+        }
+        bail!("Couldn't place a ship after {TRIES} attempts")
+    }
 }
 
 type Vec2D<T> = Vec<Vec<T>>;
 
-pub struct Board {
+struct Board {
     ships: Vec<Dyn<Ship>>,
     state: Vec2D<Dyn<CellState>>,
 }
 
 impl Board {
     fn get_cell(&self, point: &Point) -> Option<Dyn<CellState>> {
-        self.state.get(point.x)?.get(point.y).cloned()
+        self.state
+            .get(point.x as usize)?
+            .get(point.y as usize)
+            .cloned()
     }
 
     fn hit(&self, point: Point) -> Result<()> {
