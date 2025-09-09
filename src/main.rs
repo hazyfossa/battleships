@@ -442,30 +442,6 @@ impl BoardBuilder {
     }
 }
 
-// impl Board {
-//     fn cli_render(&self) {
-//         for row in self.state.clone() {
-//             let mut row_rend = Vec::new();
-
-//             for cell in row {
-//                 let cell = cell.borrow();
-//                 let cell_rend = match cell.content {
-//                     CellContent::Water => "W",
-//                     CellContent::NearShip(_) => "N",
-//                     CellContent::Ship(_) => "S",
-//                 };
-//                 row_rend.push(if cell.exposed {
-//                     "(".to_owned() + cell_rend + ")"
-//                 } else {
-//                     "[-]".to_owned()
-//                 })
-//             }
-
-//             println!("{}", row_rend.join(" "))
-//         }
-//     }
-// }
-
 #[derive(Shrinkwrap)]
 struct Board<'a> {
     id: u16,
@@ -493,6 +469,7 @@ impl Board<'_> {
                     tbody {
                         @for (x, row) in self.state.iter().enumerate() {
                                 tr {
+                                th {(x)}
                                 @for (y, cell) in row.iter().enumerate() {
                                     (cell.read().await.render(self.id, x, y))
                                 }
@@ -536,7 +513,9 @@ impl ShipCounter {
 
 fn render_win() -> Markup {
     html!({
-        #win-card {"Победа!"}
+        #screen .waves {
+            #win-card {"Победа!"}
+        }
     })
 }
 
@@ -585,7 +564,6 @@ struct RenderRequestData {
     point: Point,
 }
 
-#[axum::debug_handler]
 async fn board_handler(
     store: extract::State<Arc<Mutex<Store>>>,
     extract::Query(data): extract::Query<RenderRequestData>,
@@ -601,7 +579,6 @@ async fn board_handler(
     Ok(board.render().await)
 }
 
-#[axum::debug_handler]
 async fn new_board_handler(
     store: extract::State<Arc<Mutex<Store>>>,
 ) -> Fallible<impl IntoResponse> {
