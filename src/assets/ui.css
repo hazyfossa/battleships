@@ -1,11 +1,13 @@
 @font-face {
-    font-family: 'Caveat';
-    src: url('font/Caveat-Regular.ttf') format('ttf');
+    font-family: 'Comfortaa';
+    src: url('/font/comfortaa.woff2') format('woff2');
     font-display: swap;
+    font-weight: 400;
+    font-style: normal;
 }
 
 body {
-    font-family: 'Caveat';
+    font-family: 'Comfortaa';
     background-color: antiquewhite;
 
     width: 100vw;
@@ -47,7 +49,7 @@ body {
 
 .ship-counter {
     font-size: 6vmin;
-    align-items: center;
+    text-align: center;
 
     padding: 2vmin;
 

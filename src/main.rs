@@ -277,6 +277,14 @@ struct ShipDefinition {
 }
 
 impl ShipDefinition {
+    fn new(name: &str, length: u8, count: u8) -> Self {
+        Self {
+            name: name.to_string(),
+            length,
+            count,
+        }
+    }
+
     fn to_counter(self) -> ShipCounter {
         ShipCounter::new(self.name, self.count)
     }
@@ -601,16 +609,10 @@ async fn new_board_handler(
         .new_board(
             BoardBuilder::square(10)
                 .random(&[
-                    ShipDefinition {
-                        name: "Линкор".to_string(),
-                        length: 3,
-                        count: 2,
-                    },
-                    ShipDefinition {
-                        name: "Крейсер".to_string(),
-                        length: 2,
-                        count: 3,
-                    },
+                    ShipDefinition::new("Линкор", 4, 1),
+                    ShipDefinition::new("Крейсер", 3, 2),
+                    ShipDefinition::new("Эсминец", 2, 3),
+                    ShipDefinition::new("Торпеда", 1, 4),
                 ])
                 .await?,
         )
@@ -629,7 +631,10 @@ async fn app_handler() -> impl IntoResponse {
                 link rel="stylesheet" href ="vendor/normalize.min.css";
                 link rel="stylesheet" href="ui.css";
 
-                link rel="icon" type="image/png" sizes="16x16" href="/favicon/16x16.png"
+                link rel="icon" type="image/png" sizes="16x16" href="/favicon/16x16.png";
+                link rel="icon" type="image/png" sizes="32x32" href="/favicon/32x32.png";
+                link rel="icon" type="image/png" sizes="96x96" href="/favicon/96x96.png";
+
                 script src="vendor/htmx.min.js" {}
             };
 
