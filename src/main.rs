@@ -31,8 +31,6 @@ use crate::utils::errors::Fallible;
 
 type Dyn<T> = Arc<RwLock<T>>;
 
-// TODO: I suspect x/y cooors on board are rotated and what we call row is actually a column
-
 type BoardID = u16;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -442,6 +440,12 @@ impl BoardBuilder {
     }
 }
 
+fn int_to_letter(value: usize) -> char {
+    // NOTE: Ё :(
+    const ALPHABET: &str = "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ";
+    ALPHABET.chars().nth(value).unwrap_or('~')
+}
+
 #[derive(Shrinkwrap)]
 struct Board<'a> {
     id: u16,
@@ -467,9 +471,15 @@ impl Board<'_> {
 
                     table #board {
                     tbody {
+                        tr { // Header
+                            th {};
+                            @for i in (0..self.state.len()) {
+                                th {(int_to_letter(i))};
+                            }
+                        }
                         @for (x, row) in self.state.iter().enumerate() {
                                 tr {
-                                th {(x)}
+                                th {(x+1)};
                                 @for (y, cell) in row.iter().enumerate() {
                                     (cell.read().await.render(self.id, x, y))
                                 }
@@ -481,8 +491,6 @@ impl Board<'_> {
         }
     }
 }
-
-// TODO: anchor
 
 impl CellState {
     fn render(&self, id: BoardID, x: usize, y: usize) -> Markup {
@@ -601,6 +609,8 @@ async fn new_board_handler(
 }
 
 async fn app_handler() -> impl IntoResponse {
+    dbg!("access!");
+
     html!(
         (maud::DOCTYPE)
         html lang="ru" {
