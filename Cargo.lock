@@ -706,6 +706,7 @@ dependencies = [
  "axum",
  "rust-embed-impl",
  "rust-embed-utils",
+ "tokio",
  "walkdir",
 ]
 

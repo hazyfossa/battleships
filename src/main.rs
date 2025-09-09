@@ -11,11 +11,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
-    Router,
-    body::Body,
-    extract,
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    Router, extract,
+    response::IntoResponse,
     routing::{get, post},
 };
 use maud::{Markup, html};
@@ -25,14 +22,14 @@ use serde::Deserialize;
 use shrinkwraprs::Shrinkwrap;
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, RwLock},
 };
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 
 use crate::utils::errors::Fallible;
 
-type Dyn<T> = Arc<Mutex<T>>;
+type Dyn<T> = Arc<RwLock<T>>;
 
 // TODO: I suspect x/y cooors on board are rotated and what we call row is actually a column
 
@@ -136,7 +133,7 @@ impl CellState {
         };
 
         if let Some(ship) = self.get_ship() {
-            ship.lock().await.hit().await;
+            ship.write().await.hit().await;
         }
 
         Ok(())
@@ -183,10 +180,10 @@ impl Ship {
     }
 
     async fn sink(&mut self) {
-        self.counter.lock().await.sub_assign(1);
+        self.counter.write().await.sub_assign(1);
 
         for cell in &self.nearby_cells {
-            cell.lock().await.expose();
+            cell.write().await.expose();
         }
     }
 }
@@ -210,6 +207,10 @@ impl ShipCounter {
             remaining: n,
         }
     }
+
+    fn is_defeated(&self) -> bool {
+        self.remaining == 0
+    }
 }
 
 struct BoardData {
@@ -229,10 +230,25 @@ impl BoardData {
     async fn hit(&self, point: Point) -> Result<()> {
         self.get_cell(&point)
             .ok_or(anyhow!("Invalid cell coordinates"))?
-            .lock()
+            .write()
             .await
             .hit()
             .await
+    }
+
+    async fn win(&self) -> bool {
+        // TODO: if we can do counters without RwLock,
+        // this can be a much cleaner .iter().map(...).all()
+
+        let mut win = true;
+        for counter in &self.ship_counters {
+            let defeated = counter.read().await.is_defeated();
+            if !defeated {
+                win = false;
+                break;
+            }
+        }
+        win
     }
 }
 
@@ -268,10 +284,10 @@ impl ShipDefinition {
 
 impl BoardBuilder {
     fn new(bounds: Bounds) -> Self {
-        let state = (0..=bounds.x)
+        let state = (0..bounds.x)
             .map(|_| {
-                (0..=bounds.y)
-                    .map(|_| Arc::new(Mutex::new(CellState::default())))
+                (0..bounds.y)
+                    .map(|_| Arc::new(RwLock::new(CellState::default())))
                     .collect()
             })
             .collect();
@@ -308,7 +324,7 @@ impl BoardBuilder {
                 .get_cell(&point)
                 .ok_or(ShipAddError::OutOfBounds)?;
 
-            if cell.lock().await.contains_ship() {
+            if cell.read().await.contains_ship() {
                 return Err(ShipAddError::Collision { point }); // TODO: maybe return ship here
             }
 
@@ -326,7 +342,7 @@ impl BoardBuilder {
                             tried_points.insert(adjacent_point);
 
                             if let Some(cell) = self.inner.get_cell(&adjacent_point) {
-                                if cell.lock().await.contains_ship() {
+                                if cell.read().await.contains_ship() {
                                     return Err(ShipAddError::Collision {
                                         point: adjacent_point,
                                     });
@@ -341,7 +357,7 @@ impl BoardBuilder {
         }
 
         // No collisions detected, proceed with placing the ship
-        self.inner.ships.push(Arc::new(Mutex::new(Ship {
+        self.inner.ships.push(Arc::new(RwLock::new(Ship {
             length: points.len() as u8,
             nearby_cells: near_cells.clone(),
             counter: counter.clone(),
@@ -349,11 +365,11 @@ impl BoardBuilder {
         let ship = self.inner.ships.last().unwrap(); // TODO: is this always safe
 
         for cell in ship_cells {
-            cell.lock().await.content = CellContent::Ship(ship.clone())
+            cell.write().await.content = CellContent::Ship(ship.clone())
         }
 
         for cell in near_cells {
-            cell.lock().await.content = CellContent::NearShip(ship.clone())
+            cell.write().await.content = CellContent::NearShip(ship.clone())
         }
 
         Ok(())
@@ -368,7 +384,7 @@ impl BoardBuilder {
 
         // TODO: less rng cell bindings
 
-        for ship_add_try in 0..1000 {
+        for _ in 0..1000 {
             let horizontal = rand::rng().random_bool(0.5);
 
             let (dx, dy) = if horizontal { (length, 1) } else { (1, length) };
@@ -394,7 +410,6 @@ impl BoardBuilder {
 
             match self.add_ship_instance(&counter, points).await {
                 Ok(()) => {
-                    dbg!(ship_add_try);
                     return Ok(());
                 }
                 Err(_) => continue, // Try again with different position
@@ -407,7 +422,7 @@ impl BoardBuilder {
         for ship in ships {
             self.inner
                 .ship_counters
-                .push(Arc::new(Mutex::new(ship.clone().to_counter())));
+                .push(Arc::new(RwLock::new(ship.clone().to_counter())));
 
             let counter = self.inner.ship_counters.last().unwrap().clone();
 
@@ -455,7 +470,7 @@ impl Board<'_> {
         html! {
             #stats-container {
                 @for counter in &self.ship_counters {
-                    (counter.lock().await.render())
+                    (counter.read().await.render())
                 }
             }
 
@@ -464,7 +479,7 @@ impl Board<'_> {
                     @for (x, row) in self.state.iter().enumerate() {
                         tr {
                             @for (y, cell) in row.iter().enumerate() {
-                                (cell.lock().await.render(self.id, x, y))
+                                (cell.read().await.render(self.id, x, y))
                             }
                         }
                     }
@@ -478,12 +493,12 @@ impl CellState {
     fn render(&self, id: BoardID, x: usize, y: usize) -> Markup {
         html!({
             @if self.exposed {
-                td class={"reveal" @if self.contains_ship() {"ship"} @else {"water"}};
+                td class={@if self.contains_ship() {"ship"} @else {"water"}};
             } @else {
                 td .active-cell
-                hx-post={"/render/board/" (id) "?hit_point=" (Point::from_index(x, y))}
-                hx-swap="outerHtml"
-                hx-target="#board";
+                hx-post={"render?board="(id)"&point="(Point::from_index(x, y))}
+                hx-swap="morph:outerHTML"
+                hx-target="#container";
             }
         }
         )
@@ -495,7 +510,7 @@ impl ShipCounter {
         html!(.ship-counter {
             .cnt-name {(self.name)}
             .cnt-row {
-                .cnt-total {(self.total)} "/" .cnt-remaining {(self.remaining)}
+                .cnt-remaining {(self.remaining)} "/" .cnt-total {(self.total)}
             }
         })
     }
@@ -522,7 +537,7 @@ impl Store {
         })();
 
         let data_ref = match self.0.entry(id) {
-            Entry::Occupied(_) => bail!(""),
+            Entry::Occupied(_) => bail!("Cannot create new board, memory full!"),
             Entry::Vacant(entry) => entry.insert(Mutex::new(data)),
         };
 
@@ -540,29 +555,34 @@ impl Store {
     }
 }
 
+#[derive(Deserialize)]
+struct RenderRequestData {
+    board: BoardID,
+    point: Point,
+}
+
 #[axum::debug_handler]
 async fn board_handler(
-    extract::State(store): extract::State<Dyn<Store>>,
-    extract::Path(board_id): extract::Path<BoardID>,
-    extract::Query(point): extract::Query<Point>,
-) -> Fallible<Response<Body>> {
+    store: extract::State<Arc<Mutex<Store>>>,
+    extract::Query(data): extract::Query<RenderRequestData>,
+) -> Fallible<impl IntoResponse> {
     let store = store.lock().await;
-    let board = match store.get_board(board_id).await {
+    let board = match store.get_board(data.board).await {
         Some(board) => board,
-        None => return Ok((StatusCode::NOT_FOUND, "404 Not Found").into_response()),
+        None => return Err(anyhow!("Board not found").into()),
     };
-    board.hit(point).await?;
+    board.hit(data.point).await?;
 
-    Ok(board.render().await.into_response())
+    Ok(board.render().await)
 }
 
 #[axum::debug_handler]
 async fn new_board_handler(
-    extract::State(store): extract::State<Dyn<Store>>,
+    store: extract::State<Arc<Mutex<Store>>>,
 ) -> Fallible<impl IntoResponse> {
     let mut store = store.lock().await;
 
-    store
+    let board = store
         .new_board(
             BoardBuilder::square(8)
                 .random(&[ShipDefinition {
@@ -574,7 +594,7 @@ async fn new_board_handler(
         )
         .await?;
 
-    Ok(())
+    Ok(board.render().await)
 }
 
 async fn app_handler() -> impl IntoResponse {
@@ -584,16 +604,18 @@ async fn app_handler() -> impl IntoResponse {
             head {
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
-                link rel="stylesheet" href ="vendor/normalize.min.css";
-                link rel="stylesheet" href="ui.css";
-                script src="vendor/htmx.min.js";
+                link rel="stylesheet" href ="assets/vendor/normalize.min.css";
+                link rel="stylesheet" href="assets/ui.css";
+                script src="assets/vendor/htmx.min.js";
+                script src="assets/vendor/idiomorph.js" {}
             }
 
-            body {
+            body hx-ext="morph" {
                 #container {
                     button
                     hx-post={"/render/new"}
-                    hx-swap="outerHtml";
+                    hx-swap="outerHtml"
+                    hx-target="#container";
                 }
             }
         }
@@ -620,8 +642,8 @@ async fn main() -> Result<()> {
     let router = Router::new()
         .route("/", get(app_handler))
         .route("/render/new", post(new_board_handler))
-        .route("/render/board/{board_id}/", post(board_handler))
-        .route("/assets", get(utils::assets::asset_handler))
+        .route("/render", post(board_handler))
+        .route("/assets/{*path}", get(utils::assets::asset_handler))
         .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
         .with_state(store);
 

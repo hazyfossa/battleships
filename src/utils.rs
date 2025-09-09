@@ -36,7 +36,6 @@ pub mod assets {
 
     #[derive(Embed)]
     #[folder = "src/assets/"]
-    #[prefix = "assets"]
     struct Assets;
 
     pub struct StaticFile<T>(pub T);
@@ -46,7 +45,10 @@ pub mod assets {
         T: Into<String>,
     {
         fn into_response(self) -> Response {
-            let path = self.0.into();
+            let mut path = self.0.into();
+            if path.starts_with("assets/") {
+                path = path.replace("assets/", "");
+            }
 
             match Assets::get(path.as_str()) {
                 Some(content) => {

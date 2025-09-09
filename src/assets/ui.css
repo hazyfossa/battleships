@@ -19,6 +19,8 @@ body {
 
     justify-content: space-around;
     align-items: center;
+
+    transition: all ease-in 1s;
 }
 
 #board {
@@ -46,10 +48,6 @@ body {
     display: flex;
     flex-direction: row;
     justify-content: space-evenly;
-}
-
-.reveal {
-    transition: all ease-in 1s;
 }
 
 .water {
