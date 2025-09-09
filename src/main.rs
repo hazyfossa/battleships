@@ -236,7 +236,7 @@ impl BoardData {
             .await
     }
 
-    async fn win(&self) -> bool {
+    async fn is_win(&self) -> bool {
         // TODO: if we can do counters without RwLock,
         // this can be a much cleaner .iter().map(...).all()
 
@@ -467,37 +467,42 @@ struct Board<'a> {
 
 impl Board<'_> {
     async fn render(&self) -> Markup {
-        html! {
-            #stats-container {
-                @for counter in &self.ship_counters {
-                    (counter.read().await.render())
+        if self.is_win().await {
+            render_win()
+        } else {
+            html! {
+                #stats-container {
+                    @for counter in &self.ship_counters {
+                        (counter.read().await.render())
+                    }
                 }
-            }
 
-            table #board {
+                table #board {
                 tbody {
                     @for (x, row) in self.state.iter().enumerate() {
-                        tr {
+                            tr {
                             @for (y, cell) in row.iter().enumerate() {
                                 (cell.read().await.render(self.id, x, y))
                             }
                         }
                     }
-                }
+                }}
             }
         }
     }
 }
 
+// TODO: anchor
+
 impl CellState {
     fn render(&self, id: BoardID, x: usize, y: usize) -> Markup {
+        let point = Point::from_index(x, y);
         html!({
             @if self.exposed {
-                td class={@if self.contains_ship() {"ship"} @else {"water"}};
+                td id=(point) class={@if self.contains_ship() {"ship"} @else {"water"}};
             } @else {
                 td .active-cell
-                hx-post={"render?board="(id)"&point="(Point::from_index(x, y))}
-                hx-swap="morph:outerHTML"
+                hx-post={"render?board="(id)"&point="(point)}
                 hx-target="#container";
             }
         }
@@ -514,6 +519,12 @@ impl ShipCounter {
             }
         })
     }
+}
+
+fn render_win() -> Markup {
+    html!(# win-card {
+       "Победа!"
+    })
 }
 
 struct Store(HashMap<u16, Mutex<BoardData>>);
@@ -571,6 +582,7 @@ async fn board_handler(
         Some(board) => board,
         None => return Err(anyhow!("Board not found").into()),
     };
+
     board.hit(data.point).await?;
 
     Ok(board.render().await)
@@ -606,16 +618,16 @@ async fn app_handler() -> impl IntoResponse {
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
                 link rel="stylesheet" href ="assets/vendor/normalize.min.css";
                 link rel="stylesheet" href="assets/ui.css";
-                script src="assets/vendor/htmx.min.js";
-                script src="assets/vendor/idiomorph.js" {}
-            }
+                script src="assets/vendor/htmx.min.js" {}
+            };
 
-            body hx-ext="morph" {
+            body {
                 #container {
-                    button
-                    hx-post={"/render/new"}
-                    hx-swap="outerHtml"
-                    hx-target="#container";
+                    #new-game-btn
+                        hx-post={"/render/new"}
+                        hx-swap="outerHtml"
+                        hx-target="#container"
+                        {"Начать игру"}
                 }
             }
         }

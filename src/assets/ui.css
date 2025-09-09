@@ -36,12 +36,16 @@ body {
     display: flex;
     align-content: stretch;
     justify-content: space-evenly;
-    background-color: red;
 }
 
 .ship-counter {
-    font-size: larger;
+    font-size: 3vmin;
     align-items: center;
+
+    padding: 2vmin;
+
+    background-color: thistle;
+    border-radius: 5px;
 }
 
 .cnt-row {
@@ -51,11 +55,11 @@ body {
 }
 
 .water {
-    background-color: aqua;
+    background-color: #B0D4E8;
 }
 
 .ship {
-    background-color: black;
+    background-color: #2D3748;
 }
 
 .active-cell {
@@ -64,5 +68,28 @@ body {
 }
 
 .active-cell:hover {
-    outline: 5px solid red;
+    outline: 5px solid thistle;
+}
+
+
+
+#win-card {
+    height: 70vh;
+    width: 70vw;
+    text-align: center;
+    font-size: 25vmin;
+}
+
+#new-game-btn {
+    height: 50vh;
+    width: 50vw;
+    background-color: thistle;
+
+    text-align: center;
+    align-content: center;
+
+    font-size: 15vmin;
+
+    border-radius: 50px;
+    cursor: pointer;
 }
