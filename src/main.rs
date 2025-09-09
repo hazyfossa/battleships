@@ -639,6 +639,8 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
         .opt_value_from_str("--bind")?
         .unwrap_or("0.0.0.0:8080".to_string());
 
+    println!("Listening on http://{addr}");
+
     TcpListener::bind(addr)
         .await
         .context("Failed to bind listener")
