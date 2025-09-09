@@ -473,7 +473,10 @@ impl Board<'_> {
             html! {
                 #stats-container {
                     @for counter in &self.ship_counters {
-                        (counter.read().await.render())
+                        @let counter = counter.read().await;
+                        @if !counter.is_defeated() {
+                            (counter.render())
+                        }
                     }
                 }
 
@@ -596,12 +599,19 @@ async fn new_board_handler(
 
     let board = store
         .new_board(
-            BoardBuilder::square(8)
-                .random(&[ShipDefinition {
-                    name: "Крейсер".to_string(),
-                    length: 3,
-                    count: 4,
-                }])
+            BoardBuilder::square(10)
+                .random(&[
+                    ShipDefinition {
+                        name: "Линкор".to_string(),
+                        length: 3,
+                        count: 2,
+                    },
+                    ShipDefinition {
+                        name: "Крейсер".to_string(),
+                        length: 2,
+                        count: 3,
+                    },
+                ])
                 .await?,
         )
         .await?;
