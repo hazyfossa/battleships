@@ -1,24 +1,42 @@
 #![allow(dead_code)]
-mod asset_utils;
+mod utils;
 
-use std::{cell::RefCell, collections::HashSet, hash::Hash, ops::SubAssign, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    fmt::Display,
+    hash::Hash,
+    ops::SubAssign,
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
-
-use axum::{Router, routing::get};
+use axum::{
+    Router,
+    body::Body,
+    extract,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use maud::{Markup, html};
+use pico_args::Arguments;
+use rand::Rng;
+use serde::Deserialize;
+use shrinkwraprs::Shrinkwrap;
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, MutexGuard},
+};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 
-use maud::{Markup, Render, html};
-use rand::Rng;
+use crate::utils::errors::Fallible;
 
-use shrinkwraprs::Shrinkwrap;
-
-use crate::asset_utils::asset_handler;
-
-type Dyn<T> = Rc<RefCell<T>>;
+type Dyn<T> = Arc<Mutex<T>>;
 
 // TODO: I suspect x/y cooors on board are rotated and what we call row is actually a column
+
+type BoardID = u16;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Point {
@@ -41,17 +59,31 @@ impl Point {
             y: (self.y as isize + dy).try_into().ok()?,
         })
     }
+}
 
-    fn serialize(&self) -> String {
-        format!("{}-{}", self.x, self.y)
+impl Display for Point {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.x, self.y)
     }
+}
 
-    fn deserialize(value: String) -> Result<Self> {
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
         let (x, y) = value
             .split_once("-")
-            .ok_or(anyhow!("Delimeter not found"))?;
+            .ok_or(serde::de::Error::custom(format!(
+                "expected format 'x-y', got '{value}'",
+            )))?;
 
-        Ok(Self::new(x.parse()?, y.parse()?))
+        Ok(Self::new(
+            x.parse().map_err(serde::de::Error::custom)?,
+            y.parse().map_err(serde::de::Error::custom)?,
+        ))
     }
 }
 
@@ -96,7 +128,7 @@ struct CellState {
 }
 
 impl CellState {
-    fn hit(&mut self) -> Result<()> {
+    async fn hit(&mut self) -> Result<()> {
         if self.exposed {
             bail!("Cell already hit")
         } else {
@@ -104,7 +136,7 @@ impl CellState {
         };
 
         if let Some(ship) = self.get_ship() {
-            ship.borrow_mut().hit();
+            ship.lock().await.hit().await;
         }
 
         Ok(())
@@ -132,7 +164,7 @@ struct Ship {
 }
 
 impl Ship {
-    fn hit(&mut self) {
+    async fn hit(&mut self) {
         match self.length.checked_sub(1) {
             None => return, // Ship already sank
             Some(new_len) => {
@@ -141,7 +173,7 @@ impl Ship {
         }
 
         if self.has_sank() {
-            self.sink();
+            self.sink().await;
         }
     }
 
@@ -150,11 +182,11 @@ impl Ship {
         self.length == 0
     }
 
-    fn sink(&mut self) {
-        self.counter.borrow_mut().sub_assign(1);
+    async fn sink(&mut self) {
+        self.counter.lock().await.sub_assign(1);
 
         for cell in &self.nearby_cells {
-            cell.borrow_mut().expose();
+            cell.lock().await.expose();
         }
     }
 }
@@ -180,13 +212,13 @@ impl ShipCounter {
     }
 }
 
-struct Board {
+struct BoardData {
     ships: Vec<Dyn<Ship>>,
     ship_counters: Vec<Dyn<ShipCounter>>,
     state: Vec2D<Dyn<CellState>>,
 }
 
-impl Board {
+impl BoardData {
     fn get_cell(&self, point: &Point) -> Option<Dyn<CellState>> {
         self.state
             .get(point.x as usize)?
@@ -194,17 +226,19 @@ impl Board {
             .cloned()
     }
 
-    fn hit(&self, point: Point) -> Result<()> {
+    async fn hit(&self, point: Point) -> Result<()> {
         self.get_cell(&point)
             .ok_or(anyhow!("Invalid cell coordinates"))?
-            .borrow_mut()
+            .lock()
+            .await
             .hit()
+            .await
     }
 }
 
 struct BoardBuilder {
     bounds: Point,
-    inner: Board,
+    inner: BoardData,
 }
 
 enum ShipAddError {
@@ -237,14 +271,14 @@ impl BoardBuilder {
         let state = (0..=bounds.x)
             .map(|_| {
                 (0..=bounds.y)
-                    .map(|_| Rc::new(RefCell::new(CellState::default())))
+                    .map(|_| Arc::new(Mutex::new(CellState::default())))
                     .collect()
             })
             .collect();
 
         Self {
             bounds,
-            inner: Board {
+            inner: BoardData {
                 ship_counters: Vec::new(),
                 ships: Vec::new(),
                 state,
@@ -256,7 +290,7 @@ impl BoardBuilder {
         Self::new(Bounds { x: n, y: n })
     }
 
-    fn add_ship_instance(
+    async fn add_ship_instance(
         &mut self,
         counter: &Dyn<ShipCounter>,
         points: Vec<Point>,
@@ -274,7 +308,7 @@ impl BoardBuilder {
                 .get_cell(&point)
                 .ok_or(ShipAddError::OutOfBounds)?;
 
-            if cell.borrow().contains_ship() {
+            if cell.lock().await.contains_ship() {
                 return Err(ShipAddError::Collision { point }); // TODO: maybe return ship here
             }
 
@@ -292,7 +326,7 @@ impl BoardBuilder {
                             tried_points.insert(adjacent_point);
 
                             if let Some(cell) = self.inner.get_cell(&adjacent_point) {
-                                if cell.borrow().contains_ship() {
+                                if cell.lock().await.contains_ship() {
                                     return Err(ShipAddError::Collision {
                                         point: adjacent_point,
                                     });
@@ -307,7 +341,7 @@ impl BoardBuilder {
         }
 
         // No collisions detected, proceed with placing the ship
-        self.inner.ships.push(Rc::new(RefCell::new(Ship {
+        self.inner.ships.push(Arc::new(Mutex::new(Ship {
             length: points.len() as u8,
             nearby_cells: near_cells.clone(),
             counter: counter.clone(),
@@ -315,11 +349,11 @@ impl BoardBuilder {
         let ship = self.inner.ships.last().unwrap(); // TODO: is this always safe
 
         for cell in ship_cells {
-            cell.borrow_mut().content = CellContent::Ship(ship.clone())
+            cell.lock().await.content = CellContent::Ship(ship.clone())
         }
 
         for cell in near_cells {
-            cell.borrow_mut().content = CellContent::NearShip(ship.clone())
+            cell.lock().await.content = CellContent::NearShip(ship.clone())
         }
 
         Ok(())
@@ -329,16 +363,13 @@ impl BoardBuilder {
         todo!()
     }
 
-    fn add_ship_random(
-        &mut self,
-        mut rng: impl Rng,
-        length: u8,
-        counter: &Dyn<ShipCounter>,
-    ) -> Result<()> {
+    async fn add_ship_random(&mut self, length: u8, counter: &Dyn<ShipCounter>) -> Result<()> {
         static TRIES: u16 = 1000;
 
+        // TODO: less rng cell bindings
+
         for ship_add_try in 0..1000 {
-            let horizontal = rng.random_bool(0.5);
+            let horizontal = rand::rng().random_bool(0.5);
 
             let (dx, dy) = if horizontal { (length, 1) } else { (1, length) };
             let bounds = Bounds {
@@ -346,8 +377,8 @@ impl BoardBuilder {
                 y: self.bounds.y.saturating_sub(dy.into()),
             };
 
-            let start_x = rng.random_range(0..=bounds.x);
-            let start_y = rng.random_range(0..=bounds.y);
+            let start_x = rand::rng().random_range(0..=bounds.x);
+            let start_y = rand::rng().random_range(0..=bounds.y);
 
             let points: Vec<Point> = (0..length)
                 .map(|i| {
@@ -361,7 +392,7 @@ impl BoardBuilder {
                 })
                 .collect();
 
-            match self.add_ship_instance(&counter, points) {
+            match self.add_ship_instance(&counter, points).await {
                 Ok(()) => {
                     dbg!(ship_add_try);
                     return Ok(());
@@ -372,56 +403,59 @@ impl BoardBuilder {
         bail!("Couldn't place a ship after {TRIES} attempts")
     }
 
-    fn random(&mut self, ships: &[ShipDefinition]) -> Result<()> {
+    async fn random(mut self, ships: &[ShipDefinition]) -> Result<BoardData> {
         for ship in ships {
             self.inner
                 .ship_counters
-                .push(Rc::new(RefCell::new(ship.clone().to_counter())));
+                .push(Arc::new(Mutex::new(ship.clone().to_counter())));
 
             let counter = self.inner.ship_counters.last().unwrap().clone();
 
             for _ in 0..ship.count {
-                self.add_ship_random(rand::rng(), ship.length, &counter)?
+                self.add_ship_random(ship.length, &counter).await?
             }
         }
-        Ok(())
-    }
-
-    fn build(self) -> Board {
-        self.inner
+        Ok(self.inner)
     }
 }
 
-impl Board {
-    fn cli_render(&self) {
-        for row in self.state.clone() {
-            let mut row_rend = Vec::new();
+// impl Board {
+//     fn cli_render(&self) {
+//         for row in self.state.clone() {
+//             let mut row_rend = Vec::new();
 
-            for cell in row {
-                let cell = cell.borrow();
-                let cell_rend = match cell.content {
-                    CellContent::Water => "W",
-                    CellContent::NearShip(_) => "N",
-                    CellContent::Ship(_) => "S",
-                };
-                row_rend.push(if cell.exposed {
-                    "(".to_owned() + cell_rend + ")"
-                } else {
-                    "[-]".to_owned()
-                })
-            }
+//             for cell in row {
+//                 let cell = cell.borrow();
+//                 let cell_rend = match cell.content {
+//                     CellContent::Water => "W",
+//                     CellContent::NearShip(_) => "N",
+//                     CellContent::Ship(_) => "S",
+//                 };
+//                 row_rend.push(if cell.exposed {
+//                     "(".to_owned() + cell_rend + ")"
+//                 } else {
+//                     "[-]".to_owned()
+//                 })
+//             }
 
-            println!("{}", row_rend.join(" "))
-        }
-    }
+//             println!("{}", row_rend.join(" "))
+//         }
+//     }
+// }
+
+#[derive(Shrinkwrap)]
+struct Board<'a> {
+    id: u16,
+    #[shrinkwrap(main_field)]
+    data: MutexGuard<'a, BoardData>,
 }
 
-impl Board {
-    fn render(&self, id: u32) -> Markup {
+impl Board<'_> {
+    async fn render(&self) -> Markup {
         html! {
             #stats-container {
                 @for counter in &self.ship_counters {
-                    (counter.borrow().render())
+                    (counter.lock().await.render())
                 }
             }
 
@@ -430,7 +464,7 @@ impl Board {
                     @for (x, row) in self.state.iter().enumerate() {
                         tr {
                             @for (y, cell) in row.iter().enumerate() {
-                                (cell.borrow().render(id, x, y))
+                                (cell.lock().await.render(self.id, x, y))
                             }
                         }
                     }
@@ -441,13 +475,13 @@ impl Board {
 }
 
 impl CellState {
-    fn render(&self, id: u32, x: usize, y: usize) -> Markup {
+    fn render(&self, id: BoardID, x: usize, y: usize) -> Markup {
         html!({
             @if self.exposed {
                 td class={"reveal" @if self.contains_ship() {"ship"} @else {"water"}};
             } @else {
                 td .active-cell
-                hx-post={"/board/" (id) "/" (Point::from_index(x, y).serialize())}
+                hx-post={"/render/board/" (id) "?hit_point=" (Point::from_index(x, y))}
                 hx-swap="outerHtml"
                 hx-target="#board";
             }
@@ -456,7 +490,7 @@ impl CellState {
     }
 }
 
-impl Render for ShipCounter {
+impl ShipCounter {
     fn render(&self) -> Markup {
         html!(.ship-counter {
             .cnt-name {(self.name)}
@@ -467,43 +501,129 @@ impl Render for ShipCounter {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let html = |board: &Board| {
-        html!(
-            (maud::DOCTYPE)
-            html lang="ru" {
-                head {
-                    meta charset="UTF-8";
-                    meta name="viewport" content="width=device-width, initial-scale=1.0";
-                    link rel="stylesheet" href ="vendor/normalize.min.css";
-                    link rel="stylesheet" href="ui.css";
-                    // script src="vendor/htmx.min.js";
-                }
+struct Store(HashMap<u16, Mutex<BoardData>>);
 
-                body {
-                    #container {(board.render(1))}
+impl Store {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    async fn new_board<'a>(&'a mut self, data: BoardData) -> Result<Board<'a>> {
+        let id = (|| {
+            let mut rng = rand::rng();
+            let mut id = rng.random::<BoardID>();
+            for _ in 0..BoardID::MAX {
+                if self.0.contains_key(&id) {
+                    id = rng.random::<BoardID>();
+                    continue;
                 }
             }
-        )
+            id
+        })();
+
+        let data_ref = match self.0.entry(id) {
+            Entry::Occupied(_) => bail!(""),
+            Entry::Vacant(entry) => entry.insert(Mutex::new(data)),
+        };
+
+        Ok(Board {
+            id,
+            data: data_ref.lock().await,
+        })
+    }
+
+    async fn get_board<'a>(&'a self, id: BoardID) -> Option<Board<'a>> {
+        Some(Board {
+            id,
+            data: self.0.get(&id)?.lock().await,
+        })
+    }
+}
+
+#[axum::debug_handler]
+async fn board_handler(
+    extract::State(store): extract::State<Dyn<Store>>,
+    extract::Path(board_id): extract::Path<BoardID>,
+    extract::Query(point): extract::Query<Point>,
+) -> Fallible<Response<Body>> {
+    let store = store.lock().await;
+    let board = match store.get_board(board_id).await {
+        Some(board) => board,
+        None => return Ok((StatusCode::NOT_FOUND, "404 Not Found").into_response()),
     };
+    board.hit(point).await?;
 
-    let mut board = BoardBuilder::square(10);
-    board.random(&[ShipDefinition {
-        length: 3,
-        count: 5,
-        name: "test".to_string(),
-    }])?;
+    Ok(board.render().await.into_response())
+}
 
-    let board = board.build();
+#[axum::debug_handler]
+async fn new_board_handler(
+    extract::State(store): extract::State<Dyn<Store>>,
+) -> Fallible<impl IntoResponse> {
+    let mut store = store.lock().await;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    store
+        .new_board(
+            BoardBuilder::square(8)
+                .random(&[ShipDefinition {
+                    name: "Крейсер".to_string(),
+                    length: 3,
+                    count: 4,
+                }])
+                .await?,
+        )
+        .await?;
+
+    Ok(())
+}
+
+async fn app_handler() -> impl IntoResponse {
+    html!(
+        (maud::DOCTYPE)
+        html lang="ru" {
+            head {
+                meta charset="UTF-8";
+                meta name="viewport" content="width=device-width, initial-scale=1.0";
+                link rel="stylesheet" href ="vendor/normalize.min.css";
+                link rel="stylesheet" href="ui.css";
+                script src="vendor/htmx.min.js";
+            }
+
+            body {
+                #container {
+                    button
+                    hx-post={"/render/new"}
+                    hx-swap="outerHtml";
+                }
+            }
+        }
+    )
+}
+
+async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
+    let addr = args
+        .opt_value_from_str("--bind")?
+        .unwrap_or("0.0.0.0:8080".to_string());
+
+    TcpListener::bind(addr)
         .await
-        .context("Failed to bind listener")?;
+        .context("Failed to bind listener")
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut args = Arguments::from_env();
+    let listener = listener_from_args(&mut args).await?;
+
+    let store = Arc::new(Mutex::new(Store::new()));
 
     let router = Router::new()
-        .route("/assets", get(asset_handler))
-        .layer(ServiceBuilder::new().layer(CompressionLayer::new()));
+        .route("/", get(app_handler))
+        .route("/render/new", post(new_board_handler))
+        .route("/render/board/{board_id}/", post(board_handler))
+        .route("/assets", get(utils::assets::asset_handler))
+        .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
+        .with_state(store);
 
     Ok(axum::serve(listener, router).await.unwrap())
 }
