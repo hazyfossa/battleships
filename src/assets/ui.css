@@ -6,8 +6,6 @@
     font-style: normal;
 }
 
-
-
 body {
     font-family: 'Comfortaa';
     width: 100vw;
@@ -16,16 +14,16 @@ body {
     overflow: hidden;
 }
 
-
 #screen {
     height: 100vh;
     width: 100vw;
     display: flex;
     flex-flow: row;
     justify-content: space-evenly;
+    align-items: center;
     padding: 5rem;
 
-    background-color: #001220;
+    background-color: #c5ddf1;
 }
 
 .waves {
@@ -33,6 +31,7 @@ body {
     background-position-y: bottom;
     background-repeat: no-repeat;
     background-size: cover;
+    align-items: start !important;
 }
 
 #stats-container {
@@ -42,10 +41,11 @@ body {
     align-items: stretch;
     padding: 0.5rem 1rem;
     flex: 0 1 200px;
+    gap: 2vmin;
 }
 
 #board {
-    background-color: #e0e0e0;
+    background-color: #c5ddf1;
     width: auto;
     max-width: 100%;
     max-height: 100%;
@@ -75,16 +75,16 @@ body {
 }
 
 .ship {
-    background-color: thistle;
+    background-color: #001220;
 }
 
 .active-cell {
-    background-color: #2D3748;
+    background-color: #4FACF7;
     cursor: pointer;
 }
 
 .active-cell:hover {
-    outline: 5px solid thistle;
+    outline: 5px solid #c5ddf1;
 }
 
 #win-card {
@@ -92,6 +92,7 @@ body {
     width: 70vw;
     text-align: center;
     font-size: 25vmin;
+    padding-top: 10vh;
 }
 
 #new-game-btn {
