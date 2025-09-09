@@ -479,25 +479,27 @@ impl Board<'_> {
             render_win()
         } else {
             html! {
-                #stats-container {
-                    @for counter in &self.ship_counters {
-                        @let counter = counter.read().await;
-                        @if !counter.is_defeated() {
-                            (counter.render())
-                        }
-                    }
-                }
-
-                table #board {
-                tbody {
-                    @for (x, row) in self.state.iter().enumerate() {
-                            tr {
-                            @for (y, cell) in row.iter().enumerate() {
-                                (cell.read().await.render(self.id, x, y))
+                #screen {
+                    #stats-container {
+                        @for counter in &self.ship_counters {
+                            @let counter = counter.read().await;
+                            @if !counter.is_defeated() {
+                                (counter.render())
                             }
                         }
                     }
-                }}
+
+                    table #board {
+                    tbody {
+                        @for (x, row) in self.state.iter().enumerate() {
+                                tr {
+                                @for (y, cell) in row.iter().enumerate() {
+                                    (cell.read().await.render(self.id, x, y))
+                                }
+                            }
+                        }
+                    }}
+                }
             }
         }
     }
@@ -533,8 +535,8 @@ impl ShipCounter {
 }
 
 fn render_win() -> Markup {
-    html!(# win-card {
-       "Победа!"
+    html!({
+        #win-card {"Победа!"}
     })
 }
 
@@ -639,12 +641,14 @@ async fn app_handler() -> impl IntoResponse {
             };
 
             body {
-                #container {
-                    #new-game-btn
-                        hx-post={"/render/new"}
-                        hx-swap="outerHtml"
-                        hx-target="#container"
-                        {"Начать игру"}
+                #container { // TODO: Hx-Redirect instead
+                    #screen .waves { // TODO: partial screen updates
+                        #new-game-btn
+                            hx-post={"/render/new"}
+                            hx-swap="outerHtml"
+                            hx-target="#container"
+                            {"Начать игру"}
+                    }
                 }
             }
         }

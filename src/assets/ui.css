@@ -6,26 +6,33 @@
     font-style: normal;
 }
 
+
+
 body {
     font-family: 'Comfortaa';
-    background-color: antiquewhite;
-
     width: 100vw;
     height: 100vh;
-
-    display: flex;
-    justify-content: center;
-    align-items: center;
 
     overflow: hidden;
 }
 
-#container {
+
+#screen {
+    height: 100vh;
     width: 100vw;
     display: flex;
     flex-flow: row;
     justify-content: space-evenly;
     padding: 5rem;
+
+    background-color: #001220;
+}
+
+.waves {
+    background-image: url("/layered-waves.svg");
+    background-position-y: bottom;
+    background-repeat: no-repeat;
+    background-size: cover;
 }
 
 #stats-container {
@@ -53,7 +60,7 @@ body {
 
     padding: 2vmin;
 
-    background-color: thistle;
+    background-color: #4FACF7;
     border-radius: 5px;
 }
 
@@ -64,15 +71,15 @@ body {
 }
 
 .water {
-    background-color: #B0D4E8;
+    background-color: #0066FF;
 }
 
 .ship {
-    background-color: #2D3748;
+    background-color: thistle;
 }
 
 .active-cell {
-    background-color: gray;
+    background-color: #2D3748;
     cursor: pointer;
 }
 
@@ -90,7 +97,7 @@ body {
 #new-game-btn {
     height: 50vh;
     width: 50vw;
-    background-color: thistle;
+    background-color: #4FACF7;
 
     text-align: center;
     align-content: center;
