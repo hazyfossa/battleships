@@ -626,9 +626,11 @@ async fn app_handler() -> impl IntoResponse {
             head {
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
-                link rel="stylesheet" href ="assets/vendor/normalize.min.css";
-                link rel="stylesheet" href="assets/ui.css";
-                script src="assets/vendor/htmx.min.js" {}
+                link rel="stylesheet" href ="vendor/normalize.min.css";
+                link rel="stylesheet" href="ui.css";
+
+                link rel="icon" type="image/png" sizes="16x16" href="/favicon/16x16.png"
+                script src="vendor/htmx.min.js" {}
             };
 
             body {
@@ -667,7 +669,7 @@ async fn main() -> Result<()> {
         .route("/", get(app_handler))
         .route("/render/new", post(new_board_handler))
         .route("/render", post(board_handler))
-        .route("/assets/{*path}", get(utils::assets::asset_handler))
+        .route("/{*path}", get(utils::assets::asset_handler))
         .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
         .with_state(store);
 

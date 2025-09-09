@@ -1,11 +1,21 @@
+@font-face {
+    font-family: 'Caveat';
+    src: url('font/Caveat-Regular.ttf') format('ttf');
+    font-display: swap;
+}
+
 body {
+    font-family: 'Caveat';
+    background-color: antiquewhite;
+
     width: 100vw;
     height: 100vh;
+
     display: flex;
     justify-content: center;
     align-items: center;
+
     overflow: hidden;
-    background-color: antiquewhite;
 }
 
 #container {
