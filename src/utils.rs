@@ -11,6 +11,7 @@ pub mod errors {
     // Tell axum how to convert `AppError` into a response.
     impl IntoResponse for InternalError {
         fn into_response(self) -> Response {
+            // TODO: do not expose full error to client
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Something went wrong: {}", self.0),

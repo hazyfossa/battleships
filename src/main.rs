@@ -26,7 +26,7 @@ use tokio::{
     sync::{Mutex, RwLock},
 };
 use tower::ServiceBuilder;
-use tower_cookies::{Cookie, Cookies};
+use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing::{Level, event};
 
@@ -496,7 +496,7 @@ impl CellState {
                 td id=(point) class={@if self.contains_ship() {"ship"} @else {"water"}};
             } @else {
                 td .active-cell
-                hx-post={"render?point="(point)}
+                hx-post={"game?hit="(point)}
                 hx-target="#container";
             }
         }
@@ -581,10 +581,10 @@ type StoreAccessor = Arc<RwLock<Store>>;
 // TODO: simplify
 #[derive(Deserialize)]
 struct RenderRequestData {
-    point: Point,
+    hit: Point,
 }
 
-async fn board_handler(
+async fn game_handler(
     store: extract::State<StoreAccessor>,
     cookies: Cookies,
     extract::Query(data): extract::Query<RenderRequestData>,
@@ -606,12 +606,12 @@ async fn board_handler(
     .lock()
     .await;
 
-    board.hit(data.point).await?;
+    board.hit(data.hit).await?;
 
     Ok(board.render().await)
 }
 
-async fn new_board_handler(
+async fn new_game_handler(
     store: extract::State<StoreAccessor>,
     cookies: Cookies,
 ) -> Fallible<impl IntoResponse> {
@@ -664,7 +664,7 @@ async fn app_handler() -> impl IntoResponse {
                 #container { // TODO: Hx-Redirect instead
                     #screen .waves { // TODO: partial screen updates
                         #new-game-btn
-                            hx-post={"/render/new"}
+                            hx-post={"/game/new"}
                             hx-swap="outerHtml"
                             hx-target="#container"
                             {"Начать игру"}
@@ -707,11 +707,15 @@ async fn main() -> Result<()> {
 
     let router = Router::new()
         .route("/", get(app_handler))
-        .route("/render/new", post(new_board_handler))
-        .route("/render", post(board_handler))
+        .route("/game/new", post(new_game_handler))
+        .route("/game", post(game_handler))
         .route("/{*path}", get(utils::assets::asset_handler))
-        .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            ServiceBuilder::new()
+                .layer(CompressionLayer::new())
+                .layer(TraceLayer::new_for_http())
+                .layer(CookieManagerLayer::new()),
+        )
         .with_state(store.clone());
 
     Ok(axum::serve(listener, router).await.unwrap())
