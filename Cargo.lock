@@ -151,7 +151,6 @@ dependencies = [
  "anyhow",
  "axum",
  "maud",
- "mime_guess",
  "pico-args",
  "rand",
  "rust-embed",
@@ -793,6 +792,7 @@ version = "8.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6cc0c81648b20b70c491ff8cce00c1c3b223bb8ed2b5d41f0e54c6c4c0a3594"
 dependencies = [
+ "mime_guess",
  "sha2",
  "walkdir",
 ]
