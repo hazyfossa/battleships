@@ -61,3 +61,24 @@ pub mod assets {
         StaticFile(uri.path().trim_start_matches('/').to_string())
     }
 }
+
+pub mod scheduler {
+    pub use time::Duration as Interval;
+
+    pub fn schedule_task<F, Fut>(interval: Interval, task_fn: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+            interval.whole_seconds() as u64,
+        ));
+
+        tokio::spawn(async move {
+            loop {
+                interval.tick().await;
+                task_fn().await;
+            }
+        });
+    }
+}

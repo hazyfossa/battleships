@@ -20,14 +20,16 @@ use pico_args::Arguments;
 use rand::Rng;
 use serde::Deserialize;
 use shrinkwraprs::Shrinkwrap;
+use time::{Duration, OffsetDateTime, UtcDateTime};
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, MutexGuard, RwLock},
+    sync::{Mutex, RwLock},
 };
 use tower::ServiceBuilder;
+use tower_cookies::{Cookie, Cookies};
 use tower_http::compression::CompressionLayer;
 
-use crate::utils::errors::Fallible;
+use crate::utils::{errors::Fallible, scheduler};
 
 type Dyn<T> = Arc<RwLock<T>>;
 
@@ -211,13 +213,13 @@ impl ShipCounter {
     }
 }
 
-struct BoardData {
+struct Board {
     ships: Vec<Dyn<Ship>>,
     ship_counters: Vec<Dyn<ShipCounter>>,
     state: Vec2D<Dyn<CellState>>,
 }
 
-impl BoardData {
+impl Board {
     fn get_cell(&self, point: &Point) -> Option<Dyn<CellState>> {
         self.state
             .get(point.x as usize)?
@@ -252,7 +254,7 @@ impl BoardData {
 
 struct BoardBuilder {
     bounds: Point,
-    inner: BoardData,
+    inner: Board,
 }
 
 enum ShipAddError {
@@ -300,7 +302,7 @@ impl BoardBuilder {
 
         Self {
             bounds,
-            inner: BoardData {
+            inner: Board {
                 ship_counters: Vec::new(),
                 ships: Vec::new(),
                 state,
@@ -424,7 +426,7 @@ impl BoardBuilder {
         bail!("Couldn't place a ship after {TRIES} attempts")
     }
 
-    async fn random(mut self, ships: &[ShipDefinition]) -> Result<BoardData> {
+    async fn random(mut self, ships: &[ShipDefinition]) -> Result<Board> {
         for ship in ships {
             self.inner
                 .ship_counters
@@ -446,14 +448,7 @@ fn int_to_letter(value: usize) -> char {
     ALPHABET.chars().nth(value).unwrap_or('~')
 }
 
-#[derive(Shrinkwrap)]
-struct Board<'a> {
-    id: u16,
-    #[shrinkwrap(main_field)]
-    data: MutexGuard<'a, BoardData>,
-}
-
-impl Board<'_> {
+impl Board {
     async fn render(&self) -> Markup {
         if self.is_win().await {
             render_win()
@@ -481,7 +476,7 @@ impl Board<'_> {
                                 tr {
                                 th {(x+1)};
                                 @for (y, cell) in row.iter().enumerate() {
-                                    (cell.read().await.render(self.id, x, y))
+                                    (cell.read().await.render(x, y))
                                 }
                             }
                         }
@@ -493,14 +488,14 @@ impl Board<'_> {
 }
 
 impl CellState {
-    fn render(&self, id: BoardID, x: usize, y: usize) -> Markup {
+    fn render(&self, x: usize, y: usize) -> Markup {
         let point = Point::from_index(x, y);
         html!({
             @if self.exposed {
                 td id=(point) class={@if self.contains_ship() {"ship"} @else {"water"}};
             } @else {
                 td .active-cell
-                hx-post={"render?board="(id)"&point="(point)}
+                hx-post={"render?point="(point)}
                 hx-target="#container";
             }
         }
@@ -527,14 +522,25 @@ fn render_win() -> Markup {
     })
 }
 
-struct Store(HashMap<u16, Mutex<BoardData>>);
+#[derive(Shrinkwrap)]
+struct StoredBoard {
+    expires: OffsetDateTime,
+    #[shrinkwrap(main_field)]
+    inner: Mutex<Board>,
+}
+
+struct Store(HashMap<u16, StoredBoard>);
 
 impl Store {
     fn new() -> Self {
         Self(HashMap::new())
     }
 
-    async fn new_board<'a>(&'a mut self, data: BoardData) -> Result<Board<'a>> {
+    async fn new_board<'a>(
+        &'a mut self,
+        expires: OffsetDateTime,
+        data: Board,
+    ) -> Result<(BoardID, &'a mut Mutex<Board>)> {
         let id = (|| {
             let mut rng = rand::rng();
             let mut id = rng.random::<BoardID>();
@@ -547,40 +553,56 @@ impl Store {
             id
         })();
 
-        let data_ref = match self.0.entry(id) {
+        let board_ref = match self.0.entry(id) {
             Entry::Occupied(_) => bail!("Cannot create new board, memory full!"),
-            Entry::Vacant(entry) => entry.insert(Mutex::new(data)),
+            Entry::Vacant(entry) => entry.insert(StoredBoard {
+                expires,
+                inner: Mutex::new(data),
+            }),
         };
 
-        Ok(Board {
-            id,
-            data: data_ref.lock().await,
-        })
+        Ok((id, &mut board_ref.inner))
     }
 
-    async fn get_board<'a>(&'a self, id: BoardID) -> Option<Board<'a>> {
-        Some(Board {
-            id,
-            data: self.0.get(&id)?.lock().await,
-        })
+    async fn get_board<'a>(&'a self, id: BoardID) -> Option<&'a StoredBoard> {
+        self.0.get(&id)
+    }
+
+    async fn cleanup(&mut self) {
+        let now = UtcDateTime::now();
+        let _ = self.0.extract_if(|_, entry| entry.expires < now);
     }
 }
 
+type StoreAccessor = Arc<RwLock<Store>>;
+
+// TODO: simplify
 #[derive(Deserialize)]
 struct RenderRequestData {
-    board: BoardID,
     point: Point,
 }
 
 async fn board_handler(
-    store: extract::State<Arc<Mutex<Store>>>,
+    store: extract::State<StoreAccessor>,
+    cookies: Cookies,
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> Fallible<impl IntoResponse> {
-    let store = store.lock().await;
-    let board = match store.get_board(data.board).await {
+    let store = store.read().await;
+
+    // TODO: redirect to new game page
+    let board_id = cookies
+        .get("board")
+        .ok_or(anyhow!("Board not found. Most likely it expired."))?
+        .value()
+        .parse()
+        .map_err(|_| anyhow!("Invalid board ID."))?;
+
+    let board = match store.get_board(board_id).await {
         Some(board) => board,
-        None => return Err(anyhow!("Board not found").into()),
-    };
+        None => return Err(anyhow!("Board not found.").into()),
+    }
+    .lock()
+    .await;
 
     board.hit(data.point).await?;
 
@@ -588,12 +610,17 @@ async fn board_handler(
 }
 
 async fn new_board_handler(
-    store: extract::State<Arc<Mutex<Store>>>,
+    store: extract::State<StoreAccessor>,
+    cookies: Cookies,
 ) -> Fallible<impl IntoResponse> {
-    let mut store = store.lock().await;
+    let mut store = store.write().await;
 
-    let board = store
+    let now = OffsetDateTime::now_utc();
+    let expires = now + Duration::days(1);
+
+    let (id, board) = store
         .new_board(
+            expires,
             BoardBuilder::square(10)
                 .random(&[
                     ShipDefinition::new("Линкор", 4, 1),
@@ -605,7 +632,13 @@ async fn new_board_handler(
         )
         .await?;
 
-    Ok(board.render().await)
+    cookies.add(
+        Cookie::build(("board", id.to_string()))
+            .expires(expires)
+            .build(),
+    );
+
+    Ok(board.lock().await.render().await)
 }
 
 async fn app_handler() -> impl IntoResponse {
@@ -654,12 +687,20 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
         .context("Failed to bind listener")
 }
 
+fn schedule_cleanup(store: StoreAccessor) {
+    scheduler::schedule_task(scheduler::Interval::days(1), move || {
+        let store = store.clone();
+        async move { store.write().await.cleanup().await }
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Arguments::from_env();
     let listener = listener_from_args(&mut args).await?;
 
-    let store = Arc::new(Mutex::new(Store::new()));
+    let store = Arc::new(RwLock::new(Store::new()));
+    schedule_cleanup(store.clone());
 
     let router = Router::new()
         .route("/", get(app_handler))
@@ -667,7 +708,7 @@ async fn main() -> Result<()> {
         .route("/render", post(board_handler))
         .route("/{*path}", get(utils::assets::asset_handler))
         .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
-        .with_state(store);
+        .with_state(store.clone());
 
     Ok(axum::serve(listener, router).await.unwrap())
 }
