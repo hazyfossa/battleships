@@ -27,7 +27,8 @@ use tokio::{
 };
 use tower::ServiceBuilder;
 use tower_cookies::{Cookie, Cookies};
-use tower_http::compression::CompressionLayer;
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+use tracing::{Level, event};
 
 use crate::utils::{errors::Fallible, scheduler};
 
@@ -561,6 +562,7 @@ impl Store {
             }),
         };
 
+        event!(Level::INFO, "New board created: {}", id);
         Ok((id, &mut board_ref.inner))
     }
 
@@ -642,8 +644,6 @@ async fn new_board_handler(
 }
 
 async fn app_handler() -> impl IntoResponse {
-    dbg!("access!");
-
     html!(
         (maud::DOCTYPE)
         html lang="ru" {
@@ -696,6 +696,9 @@ fn schedule_cleanup(store: StoreAccessor) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let subscriber = tracing_subscriber::FmtSubscriber::new();
+    tracing::subscriber::set_global_default(subscriber)?;
+
     let mut args = Arguments::from_env();
     let listener = listener_from_args(&mut args).await?;
 
@@ -708,6 +711,7 @@ async fn main() -> Result<()> {
         .route("/render", post(board_handler))
         .route("/{*path}", get(utils::assets::asset_handler))
         .layer(ServiceBuilder::new().layer(CompressionLayer::new()))
+        .layer(TraceLayer::new_for_http())
         .with_state(store.clone());
 
     Ok(axum::serve(listener, router).await.unwrap())
