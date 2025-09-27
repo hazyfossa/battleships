@@ -87,25 +87,24 @@ body {
     justify-content: space-evenly;
 }
 
-.water {
+.cell.water {
     background-color: #0066FF;
 }
 
-.ship {
+.cell.ship {
     background-color: #001220;
 }
 
-.active-cell {
+.cell.active {
     background-color: #4FACF7;
     cursor: pointer;
 }
 
-.active-cell:hover {
+.cell.active:hover {
     outline: 5px solid #001220;
 }
 
-td,
-th {
+.cell {
     aspect-ratio: 1;
     height: 2vmin;
     width: 2vmin;

@@ -468,14 +468,14 @@ impl Board {
                     table #board {
                     tbody {
                         tr { // Header
-                            th {};
+                            th .cell {};
                             @for i in (0..self.state.len()) {
-                                th {(int_to_letter(i))};
+                                th .cell {(int_to_letter(i))};
                             }
                         }
                         @for (x, row) in self.state.iter().enumerate() {
                                 tr {
-                                th {(x+1)};
+                                th .cell {(x+1)};
                                 @for (y, cell) in row.iter().enumerate() {
                                     (cell.read().await.render(x, y))
                                 }
@@ -493,14 +493,13 @@ impl CellState {
         let point = Point::from_index(x, y);
         html!({
             @if self.exposed {
-                td id=(point) class={@if self.contains_ship() {"ship"} @else {"water"}};
+                td id=(point) class={@if self.contains_ship() {"cell ship"} @else {"cell water"}};
             } @else {
-                td .active-cell
+                td id=(point) .cell .active
                 hx-post={"game?hit="(point)}
                 hx-target="#container";
             }
-        }
-        )
+        })
     }
 }
 
@@ -573,6 +572,7 @@ impl Store {
     async fn cleanup(&mut self) {
         let now = UtcDateTime::now();
         let _ = self.0.extract_if(|_, entry| entry.expires < now);
+        event!(Level::INFO, "Cleaned up board data")
     }
 }
 
@@ -688,10 +688,16 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
 }
 
 fn schedule_cleanup(store: StoreAccessor) {
-    scheduler::schedule_task(scheduler::Interval::days(1), move || {
-        let store = store.clone();
-        async move { store.write().await.cleanup().await }
-    });
+    scheduler::schedule_task(
+        "Board data cleanup",
+        scheduler::Interval::days(1),
+        move || {
+            let store = store.clone();
+            async move {
+                store.write().await.cleanup().await;
+            }
+        },
+    );
 }
 
 #[tokio::main]

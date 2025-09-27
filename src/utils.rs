@@ -66,12 +66,14 @@ pub mod assets {
 
 pub mod scheduler {
     pub use time::Duration as Interval;
+    use tracing::{Level, event};
 
-    pub fn schedule_task<F, Fut>(interval: Interval, task_fn: F)
+    pub fn schedule_task<F, Fut>(name: &str, interval: Interval, task_fn: F)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        event!(Level::INFO, "Scheduled {name} to run every {interval}");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(
             interval.whole_seconds() as u64,
         ));
