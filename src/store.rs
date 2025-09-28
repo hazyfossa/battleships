@@ -1,12 +1,13 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
+use dashmap::{
+    DashMap, Entry,
+    mapref::one::{Ref, RefMut},
+};
 use rand::Rng;
 use time::{Duration, OffsetDateTime, UtcDateTime};
-use tokio::sync::{Mutex, MutexGuard, RwLock};
+use tokio::sync::{Mutex, MutexGuard};
 use tower_cookies::{Cookie, Cookies};
 
 use crate::game::Board;
@@ -26,11 +27,11 @@ impl Session {
     }
 }
 
-pub struct Store(HashMap<u16, Session>);
+pub struct Store(DashMap<u16, Session>);
 
 impl Store {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self(DashMap::new())
     }
 
     fn get_vacant_id(&self) -> Option<SessionID> {
@@ -47,7 +48,7 @@ impl Store {
         None
     }
 
-    pub fn insert_new<'a>(&'a mut self, session: Session) -> Result<(SessionID, &'a mut Session)> {
+    pub fn insert_new<'a>(&'a self, session: Session) -> Result<RefMut<'a, SessionID, Session>> {
         let id = self
             .get_vacant_id()
             .ok_or(anyhow!("Cannot create new session, memory full!"))?;
@@ -57,21 +58,23 @@ impl Store {
             Entry::Vacant(entry) => entry.insert(session),
         };
 
-        Ok((id, session_ref))
+        Ok(session_ref)
     }
 
     pub fn new_session<'a>(
-        &'a mut self,
+        &'a self,
         cookies: &Cookies,
         board: Board,
-    ) -> Result<&'a mut Session> {
+    ) -> Result<RefMut<'a, SessionID, Session>> {
         let now = OffsetDateTime::now_utc();
         let expires = now + Duration::days(1);
 
-        let (id, session) = self.insert_new(Session {
+        let session = self.insert_new(Session {
             expires,
             board: Mutex::new(board),
         })?;
+
+        let id = session.key();
 
         cookies.add(
             Cookie::build((SESSION_COOKIE_REF, id.to_string()))
@@ -83,23 +86,25 @@ impl Store {
         Ok(session)
     }
 
-    // TODO: do not expose tuple
-    pub fn get_session(&self, cookies: &Cookies) -> Option<(SessionID, &Session)> {
+    pub fn get_session<'a>(
+        &'a self,
+        cookies: &Cookies,
+    ) -> Option<(SessionID, Ref<'a, SessionID, Session>)> {
         // TODO: maybe propagate parse error
         let id = cookies.get(SESSION_COOKIE_REF)?.value().parse().ok()?;
         Some((id, self.0.get(&id)?))
     }
 
-    pub fn remove_session(&mut self, id: SessionID, cookies: &Cookies) {
+    pub async fn remove_session(&self, id: SessionID, cookies: &Cookies) {
         cookies.remove(SESSION_COOKIE_REF.into());
         self.0.remove(&id);
     }
 
-    pub async fn cleanup(&mut self) {
+    pub async fn cleanup(&self) {
         let now = UtcDateTime::now();
-        let _ = self.0.extract_if(|_, entry| entry.expires < now);
+        self.0.retain(|_, entry| entry.expires >= now);
         tracing::info!("Cleaned up board data")
     }
 }
 
-pub type StoreAccessor = Arc<RwLock<Store>>;
+pub type StoreAccessor = Arc<Store>;

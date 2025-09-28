@@ -41,8 +41,7 @@ async fn game_handler(
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> WebResult<impl IntoResponse> {
     // TODO: redirect to new game page instead of error
-    let store_read = store.read().await;
-    let (id, session) = store_read
+    let (id, session) = store
         .get_session(&cookies)
         .ok_or(anyhow!("Board not found").client_error())?;
 
@@ -51,9 +50,7 @@ async fn game_handler(
     board.hit(data.hit).await?;
 
     if board.is_win().await {
-        let mut store_write = store.write().await;
-        store_write.remove_session(id, &cookies);
-
+        store.remove_session(id, &cookies).await;
         Ok(game::ui::render_win())
     } else {
         Ok(board.render().await)
@@ -64,8 +61,6 @@ async fn new_game_handler(
     store: extract::State<StoreAccessor>,
     cookies: Cookies,
 ) -> WebResult<impl IntoResponse> {
-    let mut store = store.write().await;
-
     let session = store.new_session(
         &cookies,
         BoardBuilder::square(10)
@@ -132,7 +127,7 @@ fn schedule_cleanup(store: StoreAccessor) {
         move || {
             let store = store.clone();
             async move {
-                store.write().await.cleanup().await;
+                store.cleanup().await;
             }
         },
     );
@@ -146,7 +141,7 @@ async fn main() -> Result<()> {
     let mut args = Arguments::from_env();
     let listener = listener_from_args(&mut args).await?;
 
-    let store = Arc::new(RwLock::new(store::Store::new()));
+    let store = Arc::new(store::Store::new());
     schedule_cleanup(store.clone());
 
     let router = Router::new()
