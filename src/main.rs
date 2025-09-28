@@ -13,7 +13,7 @@ use axum::{
 use maud::html;
 use pico_args::Arguments;
 use serde::Deserialize;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{net::TcpListener, signal, sync::RwLock};
 use tower::ServiceBuilder;
 use tower_cookies::{CookieManagerLayer, Cookies};
 use tower_http::compression::CompressionLayer;
@@ -73,7 +73,8 @@ async fn new_game_handler(
             .await?,
     )?;
 
-    Ok(session.board().await.render().await)
+    let board = session.board().await;
+    Ok(board.render().await)
 }
 
 async fn app_handler() -> impl IntoResponse {
@@ -133,6 +134,32 @@ fn schedule_cleanup(store: StoreAccessor) {
     );
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutting down");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::new();
@@ -156,5 +183,8 @@ async fn main() -> Result<()> {
         )
         .with_state(store.clone());
 
-    Ok(axum::serve(listener, router).await.unwrap())
+    Ok(axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap())
 }
