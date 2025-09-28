@@ -1,6 +1,5 @@
 mod game;
 mod store;
-#[allow(dead_code)]
 mod utils;
 
 use std::sync::Arc;

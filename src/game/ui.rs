@@ -24,23 +24,26 @@ impl Board {
                         }
                     }
 
-                    table #board {
-                    tbody {
-                        tr { // Header
-                            th .cell {};
-                            @for i in (0..self.state.len()) {
-                                th .cell {(int_to_letter(i))};
-                            }
+                    #board {
+                        style {
+                            (format!(
+                                "#board {{ grid-template-columns: repeat({}, 1fr) }}",
+                                self.state.len() + 1
+                            ))
                         }
+
+                        div .cell .ui { };
+                        @for i in (0..self.state.len()) {
+                            div .cell .ui {(int_to_letter(i))}
+                        }
+
                         @for (x, row) in self.state.iter().enumerate() {
-                                tr {
-                                th .cell {(x+1)};
-                                @for (y, cell) in row.iter().enumerate() {
-                                    (cell.read().await.render(x, y))
-                                }
+                            div .cell .ui {(x+1)}
+                            @for (y, cell) in row.iter().enumerate() {
+                                (cell.read().await.render(x, y))
                             }
                         }
-                    }}
+                    }
                 }
             }
         }
@@ -60,11 +63,9 @@ impl CellState {
         let point = Point::from_index(x, y);
         html!({
             @if self.exposed {
-                td id=(point) class={@if self.contains_ship() {"cell ship"} @else {"cell water"}};
+                div id=(point) class={@if self.contains_ship() {"cell ship"} @else {"cell water"}} {}
             } @else {
-                td id=(point) .cell .active
-                hx-post={"game?hit="(point)}
-                hx-target="#container";
+                div id=(point) class="cell active" hx-post={"game?hit="(point)} hx-target="#container" {}
             }
         })
     }

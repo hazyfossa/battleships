@@ -1,3 +1,4 @@
+#![allow(dead_code)] // TODO
 mod ui;
 
 use anyhow::{Result, anyhow, bail};
