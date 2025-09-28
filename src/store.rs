@@ -8,7 +8,6 @@ use rand::Rng;
 use shrinkwraprs::Shrinkwrap;
 use time::{OffsetDateTime, UtcDateTime};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{Level, event};
 
 use crate::game::Board;
 
@@ -53,7 +52,7 @@ impl Store {
             }),
         };
 
-        event!(Level::INFO, "New board created: {}", id);
+        tracing::info!("New board created: {}", id);
         Ok((id, &mut board_ref.inner))
     }
 
@@ -64,7 +63,7 @@ impl Store {
     pub async fn cleanup(&mut self) {
         let now = UtcDateTime::now();
         let _ = self.0.extract_if(|_, entry| entry.expires < now);
-        event!(Level::INFO, "Cleaned up board data")
+        tracing::info!("Cleaned up board data")
     }
 }
 

@@ -2,6 +2,7 @@
 mod ui;
 
 use anyhow::{Result, anyhow, bail};
+use axum::http::StatusCode;
 use rand::Rng;
 use serde::Deserialize;
 use shrinkwraprs::Shrinkwrap;
@@ -9,7 +10,10 @@ use tokio::sync::RwLock;
 
 use std::{collections::HashSet, fmt::Display, hash::Hash, ops::SubAssign, sync::Arc};
 
-use crate::Dyn;
+use crate::{
+    Dyn,
+    utils::errors::{AnyhowWebExt, WebResult},
+};
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub struct Point {
@@ -203,16 +207,17 @@ impl Board {
             .cloned()
     }
 
-    pub async fn hit(&self, point: Point) -> Result<()> {
-        self.get_cell(&point)
-            .ok_or(anyhow!("Invalid cell coordinates"))?
-            .write()
-            .await
-            .hit()
-            .await
+    pub async fn hit(&self, point: Point) -> WebResult<()> {
+        let cell = self.get_cell(&point).ok_or(
+            anyhow!("Invalid cell coordinates")
+                .client_error()
+                .code(StatusCode::NOT_FOUND),
+        )?;
+
+        Ok(cell.write().await.hit().await?)
     }
 
-    async fn is_win(&self) -> bool {
+    pub async fn is_win(&self) -> bool {
         // TODO: if we can do counters without RwLock,
         // this can be a much cleaner .iter().map(...).all()
 

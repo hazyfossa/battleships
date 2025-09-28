@@ -1,31 +1,89 @@
+#![allow(dead_code)]
 use axum::{
     http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 
 pub mod errors {
-    use super::*;
-    pub struct InternalError(anyhow::Error);
-    pub type Fallible<T> = Result<T, InternalError>;
+    use axum::{BoxError, http::StatusCode, response::IntoResponse};
 
-    // Tell axum how to convert `AppError` into a response.
-    impl IntoResponse for InternalError {
-        fn into_response(self) -> Response {
-            // TODO: do not expose full error to client
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", self.0),
-            )
-                .into_response()
+    #[derive(Debug)]
+    enum WebErrorKind {
+        Client,
+        Internal,
+    }
+
+    #[derive(Debug)]
+    pub struct WebError {
+        kind: WebErrorKind,
+        inner: BoxError,
+        code: Option<StatusCode>,
+    }
+
+    impl WebError {
+        pub fn code(mut self, value: StatusCode) -> Self {
+            self.code.replace(value);
+            self
+        }
+
+        pub fn internal(error: BoxError) -> Self {
+            WebError {
+                kind: WebErrorKind::Internal,
+                inner: error,
+                code: None,
+            }
+        }
+
+        pub fn client(error: BoxError) -> Self {
+            WebError {
+                kind: WebErrorKind::Client,
+                inner: error,
+                code: None,
+            }
         }
     }
 
-    impl<E> From<E> for InternalError
-    where
-        E: Into<anyhow::Error>,
-    {
-        fn from(err: E) -> Self {
-            Self(err.into())
+    // TODO: better integrate with tower tracing
+
+    impl IntoResponse for WebError {
+        fn into_response(self) -> axum::response::Response {
+            match self.kind {
+                WebErrorKind::Client => {
+                    tracing::warn!("Client error: {}", self.inner);
+                    (
+                        self.code.unwrap_or(StatusCode::BAD_REQUEST),
+                        self.inner.to_string(),
+                    )
+                }
+                WebErrorKind::Internal => {
+                    tracing::error!("Internal server error: {}", self.inner);
+                    (
+                        self.code.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                        "Something went wrong".to_string(),
+                    )
+                }
+            }
+            .into_response()
+        }
+    }
+
+    pub type WebResult<T> = Result<T, WebError>;
+
+    // Anyhow integration
+
+    impl From<anyhow::Error> for WebError {
+        fn from(value: anyhow::Error) -> Self {
+            Self::internal(value.into())
+        }
+    }
+
+    pub trait AnyhowWebExt {
+        fn client_error(self) -> WebError;
+    }
+
+    impl AnyhowWebExt for anyhow::Error {
+        fn client_error(self) -> WebError {
+            WebError::client(self.into())
         }
     }
 }
@@ -66,14 +124,13 @@ pub mod assets {
 
 pub mod scheduler {
     pub use time::Duration as Interval;
-    use tracing::{Level, event};
 
     pub fn schedule_task<F, Fut>(name: &str, interval: Interval, task_fn: F)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        event!(Level::INFO, "Scheduled {name} to run every {interval}");
+        tracing::info!("Scheduled {name} to run every {interval}");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(
             interval.whole_seconds() as u64,
         ));

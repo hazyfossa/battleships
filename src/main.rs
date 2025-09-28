@@ -17,12 +17,15 @@ use time::{Duration, OffsetDateTime};
 use tokio::{net::TcpListener, sync::RwLock};
 use tower::ServiceBuilder;
 use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
-use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+use tower_http::compression::CompressionLayer;
 
 use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
     store::StoreAccessor,
-    utils::{errors::Fallible, scheduler},
+    utils::{
+        errors::{AnyhowWebExt, WebResult},
+        scheduler,
+    },
 };
 
 type Dyn<T> = Arc<RwLock<T>>;
@@ -37,20 +40,20 @@ async fn game_handler(
     store: extract::State<StoreAccessor>,
     cookies: Cookies,
     extract::Query(data): extract::Query<RenderRequestData>,
-) -> Fallible<impl IntoResponse> {
+) -> WebResult<impl IntoResponse> {
     let store = store.read().await;
 
-    // TODO: redirect to new game page
+    // TODO: redirect to new game page instead of error
     let board_id = cookies
         .get("board")
-        .ok_or(anyhow!("Board not found. Most likely it expired."))?
+        .ok_or(anyhow!("Board not found. Most likely it expired.").client_error())?
         .value()
         .parse()
-        .map_err(|_| anyhow!("Invalid board ID."))?;
+        .map_err(|_| anyhow!("Invalid board ID.").client_error())?;
 
     let board = match store.get_board(board_id).await {
         Some(board) => board,
-        None => return Err(anyhow!("Board not found.").into()),
+        None => return Err(anyhow!("Board not found.").client_error()),
     }
     .lock()
     .await;
@@ -63,7 +66,7 @@ async fn game_handler(
 async fn new_game_handler(
     store: extract::State<StoreAccessor>,
     cookies: Cookies,
-) -> Fallible<impl IntoResponse> {
+) -> WebResult<impl IntoResponse> {
     let mut store = store.write().await;
 
     let now = OffsetDateTime::now_utc();
@@ -129,7 +132,7 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
         .opt_value_from_str("--bind")?
         .unwrap_or("0.0.0.0:8080".to_string());
 
-    println!("Listening on http://{addr}");
+    tracing::info!("Listening on http://{addr}");
 
     TcpListener::bind(addr)
         .await
@@ -168,7 +171,6 @@ async fn main() -> Result<()> {
         .layer(
             ServiceBuilder::new()
                 .layer(CompressionLayer::new())
-                .layer(TraceLayer::new_for_http())
                 .layer(CookieManagerLayer::new()),
         )
         .with_state(store.clone());
