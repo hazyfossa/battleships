@@ -10,38 +10,34 @@ fn int_to_letter(value: usize) -> char {
 
 impl Board {
     pub async fn render(&self) -> Markup {
-        if self.is_win().await {
-            render_win()
-        } else {
-            html! {
-                #screen {
-                    #stats-container {
-                        @for counter in &self.ship_counters {
-                            @let counter = counter.read().await;
-                            @if !counter.is_defeated() {
-                                (counter.render())
-                            }
+        html! {
+            #screen {
+                #stats-container {
+                    @for counter in &self.ship_counters {
+                        @let counter = counter.read().await;
+                        @if !counter.is_defeated() {
+                            (counter.render())
                         }
                     }
+                }
 
-                    #board {
-                        style {
-                            (format!(
-                                "#board {{ grid-template-columns: repeat({}, 1fr) }}",
-                                self.state.len() + 1
-                            ))
-                        }
+                #board {
+                    style {
+                        (format!(
+                            "#board {{ grid-template-columns: repeat({}, 1fr) }}",
+                            self.state.len() + 1
+                        ))
+                    }
 
-                        div .cell .ui { };
-                        @for i in (0..self.state.len()) {
-                            div .cell .ui {(int_to_letter(i))}
-                        }
+                    div .cell .ui { };
+                    @for i in (0..self.state.len()) {
+                        div .cell .ui {(int_to_letter(i))}
+                    }
 
-                        @for (x, row) in self.state.iter().enumerate() {
-                            div .cell .ui {(x+1)}
-                            @for (y, cell) in row.iter().enumerate() {
-                                (cell.read().await.render(x, y))
-                            }
+                    @for (x, row) in self.state.iter().enumerate() {
+                        div .cell .ui {(x+1)}
+                        @for (y, cell) in row.iter().enumerate() {
+                            (cell.read().await.render(x, y))
                         }
                     }
                 }
@@ -50,7 +46,7 @@ impl Board {
     }
 }
 
-fn render_win() -> Markup {
+pub fn render_win() -> Markup {
     html!({
         #screen .waves {
             #win-card {"Победа!"}

@@ -13,10 +13,9 @@ use axum::{
 use maud::html;
 use pico_args::Arguments;
 use serde::Deserialize;
-use time::{Duration, OffsetDateTime};
 use tokio::{net::TcpListener, sync::RwLock};
 use tower::ServiceBuilder;
-use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
+use tower_cookies::{CookieManagerLayer, Cookies};
 use tower_http::compression::CompressionLayer;
 
 use crate::{
@@ -41,26 +40,24 @@ async fn game_handler(
     cookies: Cookies,
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> WebResult<impl IntoResponse> {
-    let store = store.read().await;
-
     // TODO: redirect to new game page instead of error
-    let board_id = cookies
-        .get("board")
-        .ok_or(anyhow!("Board not found. Most likely it expired.").client_error())?
-        .value()
-        .parse()
-        .map_err(|_| anyhow!("Invalid board ID.").client_error())?;
+    let store_read = store.read().await;
+    let (id, session) = store_read
+        .get_session(&cookies)
+        .ok_or(anyhow!("Board not found").client_error())?;
 
-    let board = match store.get_board(board_id).await {
-        Some(board) => board,
-        None => return Err(anyhow!("Board not found.").client_error()),
-    }
-    .lock()
-    .await;
+    let board = session.board().await;
 
     board.hit(data.hit).await?;
 
-    Ok(board.render().await)
+    if board.is_win().await {
+        let mut store_write = store.write().await;
+        store_write.remove_session(id, &cookies);
+
+        Ok(game::ui::render_win())
+    } else {
+        Ok(board.render().await)
+    }
 }
 
 async fn new_game_handler(
@@ -69,30 +66,19 @@ async fn new_game_handler(
 ) -> WebResult<impl IntoResponse> {
     let mut store = store.write().await;
 
-    let now = OffsetDateTime::now_utc();
-    let expires = now + Duration::days(1);
+    let session = store.new_session(
+        &cookies,
+        BoardBuilder::square(10)
+            .random(&[
+                ShipDefinition::new("Линкор", 4, 1),
+                ShipDefinition::new("Крейсер", 3, 2),
+                ShipDefinition::new("Эсминец", 2, 3),
+                ShipDefinition::new("Торпеда", 1, 4),
+            ])
+            .await?,
+    )?;
 
-    let (id, board) = store
-        .new_board(
-            expires,
-            BoardBuilder::square(10)
-                .random(&[
-                    ShipDefinition::new("Линкор", 4, 1),
-                    ShipDefinition::new("Крейсер", 3, 2),
-                    ShipDefinition::new("Эсминец", 2, 3),
-                    ShipDefinition::new("Торпеда", 1, 4),
-                ])
-                .await?,
-        )
-        .await?;
-
-    cookies.add(
-        Cookie::build(("board", id.to_string()))
-            .expires(expires)
-            .build(),
-    );
-
-    Ok(board.lock().await.render().await)
+    Ok(session.board().await.render().await)
 }
 
 async fn app_handler() -> impl IntoResponse {

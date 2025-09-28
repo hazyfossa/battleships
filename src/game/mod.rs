@@ -1,5 +1,5 @@
 #![allow(dead_code)] // TODO
-mod ui;
+pub mod ui;
 
 use anyhow::{Result, anyhow, bail};
 use axum::http::StatusCode;
@@ -348,12 +348,13 @@ impl BoardBuilder {
         }
 
         // No collisions detected, proceed with placing the ship
-        self.inner.ships.push(Arc::new(RwLock::new(Ship {
+        let ship = Arc::new(RwLock::new(Ship {
             length: points.len() as u8,
             nearby_cells: near_cells.clone(),
             counter: counter.clone(),
-        })));
-        let ship = self.inner.ships.last().unwrap(); // TODO: is this always safe
+        }));
+
+        self.inner.ships.push(ship.clone());
 
         for cell in ship_cells {
             cell.write().await.content = CellContent::Ship(ship.clone())
@@ -411,11 +412,8 @@ impl BoardBuilder {
 
     pub async fn random(mut self, ships: &[ShipDefinition]) -> Result<Board> {
         for ship in ships {
-            self.inner
-                .ship_counters
-                .push(Arc::new(RwLock::new(ship.clone().to_counter())));
-
-            let counter = self.inner.ship_counters.last().unwrap().clone();
+            let counter = Arc::new(RwLock::new(ship.clone().to_counter()));
+            self.inner.ship_counters.push(counter.clone());
 
             for _ in 0..ship.count {
                 self.add_ship_random(ship.length, &counter).await?
