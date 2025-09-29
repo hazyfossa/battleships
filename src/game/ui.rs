@@ -13,13 +13,14 @@ fn int_to_letter(value: usize) -> char {
 
 enum RenderMode {
     Paint,
-    Replace,
+    Update,
 }
 
 impl RenderMode {
+    // TODO: consider removing or rewriting as a macro
     fn element(&self, id: String, class: &'static str, html: Markup) -> Markup {
         html!({
-            @if matches!(self, Self::Replace) {
+            @if matches!(self, Self::Update) {
                 div id=(id) class=(PreEscaped(class)) hx-swap-oob="true" {(html)}
             } @else {
                 div id=(id) class=(PreEscaped(class)) {(html)}
@@ -66,6 +67,7 @@ impl Board {
 }
 
 impl ShipCounter {
+    // TODO: we can send updates only to .cnt-remaining on RenderMode::Update
     fn render(&self, mode: RenderMode) -> Markup {
         let class = match self.is_defeated() {
             true => "ship-counter defeated",
@@ -112,23 +114,22 @@ impl HitDisplayDiff {
     pub async fn render(&self) -> Markup {
         let mut result = self.cell.render(RenderMode::Paint).await.into_string();
 
-        if let Some(cells) = &self.additional_cells {
-            for cell in cells {
-                let rendered = cell.render(RenderMode::Replace).await.into_string();
+        if let Some(ship) = &self.sank_ship {
+            let ship = ship.read().await;
+
+            for cell in &ship.nearby_cells {
+                let rendered = cell.render(RenderMode::Update).await.into_string();
                 result.push_str(&rendered);
             }
-        };
 
-        if let Some(counters) = &self.refresh_counters {
-            for counter in counters {
-                let rendered = counter
-                    .read()
-                    .await
-                    .render(RenderMode::Replace)
-                    .into_string();
+            let counter = ship
+                .counter
+                .read()
+                .await
+                .render(RenderMode::Update)
+                .into_string();
 
-                result.push_str(&rendered);
-            }
+            result.push_str(&counter);
         }
 
         PreEscaped(result)

@@ -16,7 +16,7 @@ use crate::utils::errors::{AnyhowWebExt, WebResult};
 // TODO: how did we get here...
 type Dyn<T> = Arc<RwLock<T>>;
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct Point {
     x: u8,
     y: u8,
@@ -124,7 +124,8 @@ struct CellRef {
 }
 
 impl CellRef {
-    async fn hit(&self) -> Result<Option<Vec<CellRef>>> {
+    // Returns a ship if one was hit
+    async fn hit(&self) -> Result<Option<Dyn<Ship>>> {
         let mut cell = self.accessor.write().await;
 
         if cell.exposed {
@@ -138,14 +139,31 @@ impl CellRef {
             Some(ship) => ship,
         };
 
-        Ok(ship.write().await.hit().await)
+        ship.write().await.hit().await;
+
+        Ok(Some(ship))
     }
 }
 
 pub struct HitDisplayDiff {
     cell: CellRef,
-    additional_cells: Option<Vec<CellRef>>,
-    refresh_counters: Option<Vec<Dyn<ShipCounter>>>,
+    sank_ship: Option<Dyn<Ship>>,
+}
+
+impl HitDisplayDiff {
+    fn single_cell(cell: CellRef) -> Self {
+        Self {
+            cell,
+            sank_ship: None,
+        }
+    }
+
+    fn sank_ship(cell: CellRef, ship: Dyn<Ship>) -> Self {
+        Self {
+            cell,
+            sank_ship: Some(ship),
+        }
+    }
 }
 
 struct Ship {
@@ -178,7 +196,7 @@ impl Ship {
     }
 
     async fn register_sink(&mut self) {
-        self.counter.write().await.sub_assign(1);
+        self.counter.write().await.decrease();
 
         for cell in &self.nearby_cells {
             cell.write().await.expose();
@@ -190,12 +208,9 @@ impl Ship {
 // Requires drawing ui in a clever way, not inline.
 type Vec2D<T> = Vec<Vec<T>>;
 
-#[derive(Shrinkwrap)]
-#[shrinkwrap(mutable)]
 struct ShipCounter {
     name: String,
     total: u8,
-    #[shrinkwrap(main_field)]
     remaining: u8,
 }
 
@@ -210,6 +225,10 @@ impl ShipCounter {
 
     fn is_defeated(&self) -> bool {
         self.remaining == 0
+    }
+
+    fn decrease(&mut self) {
+        self.remaining.sub_assign(1);
     }
 }
 
@@ -238,18 +257,20 @@ impl Board {
                 .code(StatusCode::NOT_FOUND),
         )?;
 
-        let additional_cells = cell.hit().await?;
-
-        let refresh_counters = if additional_cells.is_some() {
-            Some(self.ship_counters.clone())
-        } else {
-            None
+        let sank_ship = match cell.hit().await? {
+            Some(ship) => {
+                if ship.read().await.has_sank() {
+                    Some(ship)
+                } else {
+                    None
+                }
+            }
+            None => None,
         };
 
-        Ok(HitDisplayDiff {
-            cell: cell.clone(),
-            additional_cells,
-            refresh_counters,
+        Ok(match sank_ship {
+            Some(ship) => HitDisplayDiff::sank_ship(cell, ship),
+            None => HitDisplayDiff::single_cell(cell),
         })
     }
 
