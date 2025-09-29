@@ -1,14 +1,15 @@
 #![allow(dead_code)] // TODO
 pub mod ui;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::http::StatusCode;
 use rand::Rng;
-use serde::Deserialize;
 use shrinkwraprs::Shrinkwrap;
 use tokio::sync::RwLock;
 
-use std::{collections::HashSet, fmt::Display, hash::Hash, ops::SubAssign, sync::Arc};
+use std::{
+    collections::HashSet, fmt::Display, hash::Hash, ops::SubAssign, str::FromStr, sync::Arc,
+};
 
 use crate::utils::errors::{AnyhowWebExt, WebResult};
 
@@ -44,23 +45,18 @@ impl Display for Point {
     }
 }
 
-impl<'de> Deserialize<'de> for Point {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
+impl FromStr for Point {
+    type Err = anyhow::Error;
 
-        let (x, y) = value
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (x_str, y_str) = s
             .split_once("-")
-            .ok_or(serde::de::Error::custom(format!(
-                "expected format 'x-y', got '{value}'",
-            )))?;
+            .ok_or(anyhow!("expected format 'x-y', got '{s}'"))?;
 
-        Ok(Self::new(
-            x.parse().map_err(serde::de::Error::custom)?,
-            y.parse().map_err(serde::de::Error::custom)?,
-        ))
+        let x = x_str.parse().context("failed to parse x coordinate")?;
+        let y = y_str.parse().context("failed to parse y coordinate")?;
+
+        Ok(Self { x, y })
     }
 }
 
@@ -105,20 +101,6 @@ struct CellState {
 }
 
 impl CellState {
-    async fn hit(&mut self) -> Result<()> {
-        if self.exposed {
-            bail!("Cell already hit")
-        } else {
-            self.expose();
-        };
-
-        if let Some(ship) = self.get_ship() {
-            ship.write().await.hit().await;
-        }
-
-        Ok(())
-    }
-
     #[inline]
     fn expose(&mut self) {
         self.exposed = true;
@@ -134,23 +116,59 @@ impl Default for CellState {
     }
 }
 
+#[derive(Clone, Shrinkwrap)]
+struct CellRef {
+    #[shrinkwrap(main_field)]
+    accessor: Dyn<CellState>,
+    point: Point,
+}
+
+impl CellRef {
+    async fn hit(&self) -> Result<Option<Vec<CellRef>>> {
+        let mut cell = self.accessor.write().await;
+
+        if cell.exposed {
+            bail!("Cell already hit")
+        } else {
+            cell.expose();
+        };
+
+        let ship = match cell.get_ship() {
+            None => return Ok(None),
+            Some(ship) => ship,
+        };
+
+        Ok(ship.write().await.hit().await)
+    }
+}
+
+pub struct HitDisplayDiff {
+    cell: CellRef,
+    additional_cells: Option<Vec<CellRef>>,
+    refresh_counters: Option<Vec<Dyn<ShipCounter>>>,
+}
+
 struct Ship {
     length: u8,
-    nearby_cells: Vec<Dyn<CellState>>,
+    nearby_cells: Vec<CellRef>,
     counter: Dyn<ShipCounter>,
 }
 
 impl Ship {
-    async fn hit(&mut self) {
+    // Returns extra cells to be updated
+    async fn hit(&mut self) -> Option<Vec<CellRef>> {
         match self.length.checked_sub(1) {
-            None => return, // Ship already sank
+            None => return None, // Ship already sank
             Some(new_len) => {
                 self.length = new_len;
             }
         }
 
         if self.has_sank() {
-            self.sink().await;
+            self.register_sink().await;
+            Some(self.nearby_cells.clone())
+        } else {
+            None // No extra updates needed
         }
     }
 
@@ -159,7 +177,7 @@ impl Ship {
         self.length == 0
     }
 
-    async fn sink(&mut self) {
+    async fn register_sink(&mut self) {
         self.counter.write().await.sub_assign(1);
 
         for cell in &self.nearby_cells {
@@ -168,6 +186,8 @@ impl Ship {
     }
 }
 
+// TODO: make this flat
+// Requires drawing ui in a clever way, not inline.
 type Vec2D<T> = Vec<Vec<T>>;
 
 #[derive(Shrinkwrap)]
@@ -200,21 +220,37 @@ pub struct Board {
 }
 
 impl Board {
-    fn get_cell(&self, point: &Point) -> Option<Dyn<CellState>> {
-        self.state
-            .get(point.x as usize)?
-            .get(point.y as usize)
-            .cloned()
+    fn get_cell(&self, point: Point) -> Option<CellRef> {
+        Some(CellRef {
+            point,
+            accessor: self
+                .state
+                .get(point.x as usize)?
+                .get(point.y as usize)
+                .cloned()?,
+        })
     }
 
-    pub async fn hit(&self, point: Point) -> WebResult<()> {
-        let cell = self.get_cell(&point).ok_or(
+    pub async fn hit(&self, point: Point) -> WebResult<HitDisplayDiff> {
+        let cell = self.get_cell(point).ok_or(
             anyhow!("Invalid cell coordinates")
                 .client_error()
                 .code(StatusCode::NOT_FOUND),
         )?;
 
-        Ok(cell.write().await.hit().await?)
+        let additional_cells = cell.hit().await?;
+
+        let refresh_counters = if additional_cells.is_some() {
+            Some(self.ship_counters.clone())
+        } else {
+            None
+        };
+
+        Ok(HitDisplayDiff {
+            cell: cell.clone(),
+            additional_cells,
+            refresh_counters,
+        })
     }
 
     pub async fn is_win(&self) -> bool {
@@ -310,7 +346,7 @@ impl BoardBuilder {
         for &point in &points {
             let cell = self
                 .inner
-                .get_cell(&point)
+                .get_cell(point)
                 .ok_or(ShipAddError::OutOfBounds)?;
 
             if cell.read().await.get_collision().is_some() {
@@ -330,7 +366,7 @@ impl BoardBuilder {
                         {
                             tried_points.insert(adjacent_point);
 
-                            if let Some(cell) = self.inner.get_cell(&adjacent_point) {
+                            if let Some(cell) = self.inner.get_cell(adjacent_point) {
                                 // TODO: is this check redundant
                                 // considering we checked for collisions above?
                                 if cell.read().await.contains_ship() {

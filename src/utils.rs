@@ -179,3 +179,60 @@ pub mod shutdown {
         tracing::info!("Shutting down");
     }
 }
+
+pub mod htmx {
+    use anyhow::{Context, anyhow};
+    use axum::{
+        body::Body,
+        extract::FromRequestParts,
+        http::{HeaderMap, HeaderName},
+        response::IntoResponse,
+    };
+    use shrinkwraprs::Shrinkwrap;
+
+    use crate::utils::errors::AnyhowWebExt;
+
+    use super::errors::WebError;
+
+    #[derive(Shrinkwrap)]
+    pub struct HtmxTarget(String);
+
+    impl<S: Send + Sync> FromRequestParts<S> for HtmxTarget {
+        type Rejection = WebError;
+
+        async fn from_request_parts(
+            parts: &mut axum::http::request::Parts,
+            state: &S,
+        ) -> Result<Self, Self::Rejection> {
+            let headers = HeaderMap::from_request_parts(parts, state).await.unwrap();
+            let value = headers
+                .get("HX-Target")
+                .ok_or(anyhow!("This handler should be invoked by HTMX").client_error())?
+                .to_str()
+                .context("Invalid target header")
+                .map_err(|e| e.client_error())?;
+
+            Ok(Self(value.into()))
+        }
+    }
+
+    pub struct HtmxRedirect {
+        url: &'static str,
+    }
+
+    impl HtmxRedirect {
+        pub fn to(target: &'static str) -> Self {
+            Self { url: target }
+        }
+    }
+
+    impl IntoResponse for HtmxRedirect {
+        fn into_response(self) -> axum::response::Response {
+            (
+                [(&HeaderName::from_static("hx-redirect"), self.url)],
+                Body::empty(),
+            )
+                .into_response()
+        }
+    }
+}

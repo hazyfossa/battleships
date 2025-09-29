@@ -155,7 +155,6 @@ dependencies = [
  "pico-args",
  "rand",
  "rust-embed",
- "serde",
  "shrinkwraprs",
  "time",
  "tokio",

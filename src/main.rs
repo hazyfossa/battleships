@@ -6,13 +6,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    Router, extract,
-    response::IntoResponse,
+    Router,
+    response::{IntoResponse, Response},
     routing::{get, patch, put},
 };
-use maud::html;
+use maud::{Markup, html};
 use pico_args::Arguments;
-use serde::Deserialize;
 use time::Duration;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -22,30 +21,34 @@ use tower_http::compression::CompressionLayer;
 use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
     session::{SessionManager, SessionOptionExt, Store},
-    utils::{assets::asset_handler, errors::WebResult, shutdown},
+    utils::{
+        assets::asset_handler,
+        errors::{AnyhowWebExt, WebResult},
+        htmx::{HtmxRedirect, HtmxTarget},
+        shutdown,
+    },
 };
-
-// TODO: simplify
-#[derive(Deserialize)]
-struct RenderRequestData {
-    hit: Point,
-}
 
 async fn game_handler(
     sessions: session::SessionManager,
-    extract::Query(data): extract::Query<RenderRequestData>,
-) -> WebResult<impl IntoResponse> {
+    target: HtmxTarget,
+) -> WebResult<Response> {
     // TODO: redirect to new game page instead of error
     let session = sessions.current().require()?;
-
     let board = &session.board;
-    board.hit(data.hit).await?;
+
+    let cell: Point = target
+        .parse()
+        .context("Invalid cell definition")
+        .map_err(|e| e.client_error())?;
+
+    let display_diff = board.hit(cell).await?;
 
     if board.is_win().await {
         sessions.delete(session).await;
-        Ok(game::ui::render_win())
+        Ok(HtmxRedirect::to("/game/win").into_response())
     } else {
-        Ok(board.render().await)
+        Ok(display_diff.render().await.into_response())
     }
 }
 
@@ -70,39 +73,65 @@ async fn continue_game_handler(sessions: SessionManager) -> WebResult<impl IntoR
     Ok(session.board.render().await)
 }
 
-async fn app_handler(sessions: SessionManager) -> impl IntoResponse {
+fn page(modifier: &'static str, html: Markup) -> Markup {
     html!(
         (maud::DOCTYPE)
         html lang="ru" {
             head {
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
-                link rel="stylesheet" href ="vendor/normalize.min.css";
-                link rel="stylesheet" href="ui.css";
+                link rel="stylesheet" href ="/vendor/normalize.min.css";
+                link rel="stylesheet" href="/ui.css";
 
                 link rel="icon" type="image/png" sizes="16x16" href="/favicon/16x16.png";
                 link rel="icon" type="image/png" sizes="32x32" href="/favicon/32x32.png";
                 link rel="icon" type="image/png" sizes="96x96" href="/favicon/96x96.png";
 
-                script src="vendor/htmx.min.js" {}
+                meta name="htmx-config" content={r#"{"defaultSwapStyle": "outerHTML"}"#};
+                script src="/vendor/htmx.min.js" {}
             };
 
-            body { // TODO: Hx-Redirect instead
-            #screen .waves { // TODO: partial screen updates
-            #display .waves {
-                .game-btn
-                    hx-put={"/game"}
-                    hx-target="body"
-                    {"Начать игру"};
-
-                @if sessions.current_exists() {
-                    .game-btn
-                        hx-get={"/game"}
-                        hx-target="body"
-                        {"Продолжить игру"};
+            body {
+                #screen class=(modifier) {
+                    #display class=(modifier) {
+                        (html)
+                    }
                 }
             }
-        }}}
+        }
+    )
+}
+
+async fn page_app(sessions: SessionManager) -> impl IntoResponse {
+    page(
+        "waves",
+        html!({
+            .btn.menu
+                hx-put={"/game"}
+                hx-target="body"
+                hx-swap="innerHTML"
+                {"Начать игру"};
+
+            @if sessions.current_exists() {
+                .btn.menu
+                    hx-get={"/game"}
+                    hx-target="body"
+                    hx-swap="innerHTML"
+                    {"Продолжить игру"};
+            }}
+        ),
+    )
+}
+
+pub async fn page_win() -> Markup {
+    page(
+        "waves",
+        html!({
+            #win-text {"Победа!"}
+            a #win-exit href="/" {
+                .btn.exit  { "Выход" }
+            }
+        }),
     )
 }
 
@@ -130,7 +159,8 @@ async fn main() -> Result<()> {
     let store = store.with_cleanup();
 
     let router = Router::new()
-        .route("/", get(app_handler))
+        .route("/", get(page_app))
+        .route("/game/win", get(page_win))
         //
         .route("/game", get(continue_game_handler))
         .route("/game", put(new_game_handler))

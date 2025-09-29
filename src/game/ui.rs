@@ -1,11 +1,31 @@
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 
-use crate::game::{Board, CellState, Point, ShipCounter};
+use crate::game::{Board, CellRef, CellState, HitDisplayDiff, Point, ShipCounter};
+
+// TODO: some stuff can be much better if we replace maud with a typed html engine that understands htmx
+// Unfortunately, no such thing exists from my knowledge
 
 fn int_to_letter(value: usize) -> char {
     // NOTE: Ё :(
     const ALPHABET: &str = "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ";
     ALPHABET.chars().nth(value).unwrap_or('~')
+}
+
+enum RenderMode {
+    Paint,
+    Replace,
+}
+
+impl RenderMode {
+    fn element(&self, id: String, class: &'static str, html: Markup) -> Markup {
+        html!({
+            @if matches!(self, Self::Replace) {
+                div id=(id) class=(PreEscaped(class)) hx-swap-oob="true" {(html)}
+            } @else {
+                div id=(id) class=(PreEscaped(class)) {(html)}
+            }
+        })
+    }
 }
 
 impl Board {
@@ -15,10 +35,7 @@ impl Board {
             #display .game {
                 #stats-container {
                     @for counter in &self.ship_counters {
-                        @let counter = counter.read().await;
-                        @if !counter.is_defeated() {
-                            (counter.render())
-                        }
+                        (counter.read().await.render(RenderMode::Paint))
                     }
                 }
 
@@ -38,7 +55,8 @@ impl Board {
                     @for (x, row) in self.state.iter().enumerate() {
                         div .cell .ui {(x+1)}
                         @for (y, cell) in row.iter().enumerate() {
-                            (cell.read().await.render(x, y))
+                            @let point = Point::from_index(x,y);
+                            (cell.read().await.render(point, RenderMode::Paint))
                         }
                     }
                 }
@@ -47,35 +65,72 @@ impl Board {
     }
 }
 
-pub fn render_win() -> Markup {
-    html!({
-        #screen .waves {
-        #display .waves {
-            #win-card {"Победа!"}
-        }}
-    })
-}
+impl ShipCounter {
+    fn render(&self, mode: RenderMode) -> Markup {
+        let class = match self.is_defeated() {
+            true => "ship-counter defeated",
+            false => "ship-counter",
+        };
 
-impl CellState {
-    fn render(&self, x: usize, y: usize) -> Markup {
-        let point = Point::from_index(x, y);
-        html!({
-            @if self.exposed {
-                div id=(point) class={@if self.contains_ship() {"cell ship"} @else {"cell water"}} {}
-            } @else {
-                div id=(point) class="cell active" hx-patch={"game?hit="(point)} hx-target="body" {}
-            }
-        })
+        mode.element(
+            self.name.clone(), // TODO: id independent of ship name
+            class,
+            html!({
+                .cnt-name {(self.name)}
+                .cnt-row {
+                    .cnt-remaining {(self.remaining)} "/" .cnt-total {(self.total)}
+                }
+            }),
+        )
     }
 }
 
-impl ShipCounter {
-    fn render(&self) -> Markup {
-        html!(.ship-counter {
-            .cnt-name {(self.name)}
-            .cnt-row {
-                .cnt-remaining {(self.remaining)} "/" .cnt-total {(self.total)}
+impl CellState {
+    fn render(&self, point: Point, mode: RenderMode) -> Markup {
+        if self.exposed {
+            let class = match self.contains_ship() {
+                true => "cell ship",
+                false => "cell water",
+            };
+
+            mode.element(point.to_string(), class, PreEscaped("".into()))
+        } else {
+            html!({
+                div id=(point) class="cell active" hx-patch="game" {}
+            })
+        }
+    }
+}
+
+impl CellRef {
+    async fn render(&self, mode: RenderMode) -> Markup {
+        self.accessor.read().await.render(self.point, mode)
+    }
+}
+
+impl HitDisplayDiff {
+    pub async fn render(&self) -> Markup {
+        let mut result = self.cell.render(RenderMode::Paint).await.into_string();
+
+        if let Some(cells) = &self.additional_cells {
+            for cell in cells {
+                let rendered = cell.render(RenderMode::Replace).await.into_string();
+                result.push_str(&rendered);
             }
-        })
+        };
+
+        if let Some(counters) = &self.refresh_counters {
+            for counter in counters {
+                let rendered = counter
+                    .read()
+                    .await
+                    .render(RenderMode::Replace)
+                    .into_string();
+
+                result.push_str(&rendered);
+            }
+        }
+
+        PreEscaped(result)
     }
 }
