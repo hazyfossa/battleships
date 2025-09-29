@@ -4,12 +4,11 @@ mod utils;
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use axum::{
     Router, extract,
-    http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, put},
 };
 use maud::html;
 use pico_args::Arguments;
@@ -22,12 +21,8 @@ use tower_http::compression::CompressionLayer;
 
 use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
-    session::{SessionManager, Store},
-    utils::{
-        assets::asset_handler,
-        errors::{AnyhowWebExt, WebResult},
-        shutdown,
-    },
+    session::{SessionManager, SessionOptionExt, Store},
+    utils::{assets::asset_handler, errors::WebResult, shutdown},
 };
 
 type Dyn<T> = Arc<RwLock<T>>;
@@ -43,11 +38,7 @@ async fn game_handler(
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> WebResult<impl IntoResponse> {
     // TODO: redirect to new game page instead of error
-    let session = sessions.current().ok_or(
-        anyhow!("Board not found")
-            .client_error()
-            .code(StatusCode::UNAUTHORIZED),
-    )?;
+    let session = sessions.current().require()?;
 
     let board = &session.board;
     board.hit(data.hit).await?;
@@ -76,7 +67,12 @@ async fn new_game_handler(sessions: SessionManager) -> WebResult<impl IntoRespon
     Ok(board.render().await)
 }
 
-async fn app_handler() -> impl IntoResponse {
+async fn continue_game_handler(sessions: SessionManager) -> WebResult<impl IntoResponse> {
+    let session = sessions.current().require()?;
+    Ok(session.board.render().await)
+}
+
+async fn app_handler(sessions: SessionManager) -> impl IntoResponse {
     html!(
         (maud::DOCTYPE)
         html lang="ru" {
@@ -93,18 +89,22 @@ async fn app_handler() -> impl IntoResponse {
                 script src="vendor/htmx.min.js" {}
             };
 
-            body {
-                #container { // TODO: Hx-Redirect instead
-                    #screen .waves { // TODO: partial screen updates
-                        #new-game-btn
-                            hx-post={"/game/new"}
-                            hx-swap="outerHtml"
-                            hx-target="#container"
-                            {"Начать игру"}
-                    }
+            body { // TODO: Hx-Redirect instead
+            #screen .waves { // TODO: partial screen updates
+            #display .waves {
+                .game-btn
+                    hx-put={"/game"}
+                    hx-target="body"
+                    {"Начать игру"};
+
+                @if sessions.current_exists() {
+                    .game-btn
+                        hx-get={"/game"}
+                        hx-target="body"
+                        {"Продолжить игру"};
                 }
             }
-        }
+        }}}
     )
 }
 
@@ -133,8 +133,11 @@ async fn main() -> Result<()> {
 
     let router = Router::new()
         .route("/", get(app_handler))
-        .route("/game/new", post(new_game_handler))
-        .route("/game", post(game_handler))
+        //
+        .route("/game", get(continue_game_handler))
+        .route("/game", put(new_game_handler))
+        .route("/game", patch(game_handler))
+        //
         .route("/{*path}", get(asset_handler))
         .layer(
             ServiceBuilder::new()

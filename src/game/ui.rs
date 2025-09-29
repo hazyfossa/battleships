@@ -12,6 +12,7 @@ impl Board {
     pub async fn render(&self) -> Markup {
         html! {
             #screen {
+            #display .game {
                 #stats-container {
                     @for counter in &self.ship_counters {
                         @let counter = counter.read().await;
@@ -41,7 +42,7 @@ impl Board {
                         }
                     }
                 }
-            }
+            }}
         }
     }
 }
@@ -49,8 +50,9 @@ impl Board {
 pub fn render_win() -> Markup {
     html!({
         #screen .waves {
+        #display .waves {
             #win-card {"Победа!"}
-        }
+        }}
     })
 }
 
@@ -61,7 +63,7 @@ impl CellState {
             @if self.exposed {
                 div id=(point) class={@if self.contains_ship() {"cell ship"} @else {"cell water"}} {}
             } @else {
-                div id=(point) class="cell active" hx-post={"game?hit="(point)} hx-target="#container" {}
+                div id=(point) class="cell active" hx-patch={"game?hit="(point)} hx-target="body" {}
             }
         })
     }

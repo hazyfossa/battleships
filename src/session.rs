@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
-use axum::extract::{FromRef, FromRequestParts};
+use anyhow::{Result, anyhow, bail};
+use axum::{
+    extract::{FromRef, FromRequestParts},
+    http::StatusCode,
+};
 use dashmap::{
     DashMap, Entry,
     mapref::one::{Ref, RefMut},
@@ -12,7 +15,10 @@ use uuid::Uuid;
 
 use crate::{
     game::Board,
-    utils::{errors::WebError, scheduler},
+    utils::{
+        errors::{AnyhowWebExt, WebError, WebResult},
+        scheduler,
+    },
 };
 
 type SessionID = Uuid;
@@ -117,6 +123,27 @@ impl<'a> SessionManager {
     pub async fn delete(&'a self, handle: SessionRef<'a>) {
         self.cookies.remove(SESSION_COOKIE_REF.into());
         self.store.delete(handle).await;
+    }
+
+    pub fn current_exists(&self) -> bool {
+        // TODO: there is a flaw with this approach:
+        // if the cookie is invalid or we dropped store between client requests
+        // the client will see a non-functional continue game button
+        self.cookies.get(SESSION_COOKIE_REF).is_some()
+    }
+}
+
+pub trait SessionOptionExt<'a> {
+    fn require(self) -> WebResult<SessionRef<'a>>;
+}
+
+impl<'a> SessionOptionExt<'a> for Option<SessionRef<'a>> {
+    fn require(self) -> WebResult<SessionRef<'a>> {
+        self.ok_or(
+            anyhow!("Session not found")
+                .client_error()
+                .code(StatusCode::UNAUTHORIZED),
+        )
     }
 }
 
