@@ -46,11 +46,10 @@ async fn game_handler(
         .get_session(&cookies)
         .ok_or(anyhow!("Board not found").client_error())?;
 
-    let board = session.board().await;
+    let board = &session.board;
     board.hit(data.hit).await?;
 
     if board.is_win().await {
-        drop(board);
         store.remove_session(session, &cookies).await;
         Ok(game::ui::render_win())
     } else {
@@ -74,7 +73,7 @@ async fn new_game_handler(
             .await?,
     )?;
 
-    let board = session.board().await;
+    let board = &session.board;
     Ok(board.render().await)
 }
 

@@ -7,7 +7,6 @@ use dashmap::{
 };
 use rand::Rng;
 use time::{Duration, OffsetDateTime, UtcDateTime};
-use tokio::sync::{Mutex, MutexGuard};
 use tower_cookies::{Cookie, Cookies};
 
 use crate::game::Board;
@@ -18,13 +17,7 @@ static SESSION_COOKIE_REF: &str = "board";
 
 pub struct Session {
     expires: OffsetDateTime,
-    board: Mutex<Board>,
-}
-
-impl Session {
-    pub async fn board<'a>(&'a self) -> MutexGuard<'a, Board> {
-        self.board.lock().await
-    }
+    pub board: Board,
 }
 
 type SessionRef<'a> = Ref<'a, SessionID, Session>;
@@ -69,10 +62,7 @@ impl<'a> Store {
         let now = OffsetDateTime::now_utc();
         let expires = now + Duration::days(1);
 
-        let session = self.insert_new(Session {
-            expires,
-            board: Mutex::new(board),
-        })?;
+        let session = self.insert_new(Session { expires, board })?;
 
         let id = session.key();
 
