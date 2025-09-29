@@ -81,6 +81,9 @@ body {
 
     font-size: 5vmin;
     overflow: hidden;
+
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .cell.water {
