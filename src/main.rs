@@ -1,5 +1,5 @@
 mod game;
-mod store;
+mod session;
 mod utils;
 
 use std::sync::Arc;
@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Router, extract,
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -16,12 +17,12 @@ use serde::Deserialize;
 use time::Duration;
 use tokio::{net::TcpListener, sync::RwLock};
 use tower::ServiceBuilder;
-use tower_cookies::{CookieManagerLayer, Cookies};
+use tower_cookies::CookieManagerLayer;
 use tower_http::compression::CompressionLayer;
 
 use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
-    store::{Store, StoreAccessor},
+    session::{SessionManager, Store},
     utils::{
         assets::asset_handler,
         errors::{AnyhowWebExt, WebResult},
@@ -38,32 +39,29 @@ struct RenderRequestData {
 }
 
 async fn game_handler(
-    store: extract::State<StoreAccessor>,
-    cookies: Cookies,
+    sessions: session::SessionManager,
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> WebResult<impl IntoResponse> {
     // TODO: redirect to new game page instead of error
-    let session = store
-        .get_session(&cookies)
-        .ok_or(anyhow!("Board not found").client_error())?;
+    let session = sessions.current().ok_or(
+        anyhow!("Board not found")
+            .client_error()
+            .code(StatusCode::UNAUTHORIZED),
+    )?;
 
     let board = &session.board;
     board.hit(data.hit).await?;
 
     if board.is_win().await {
-        store.remove_session(session, &cookies).await;
+        sessions.delete(session).await;
         Ok(game::ui::render_win())
     } else {
         Ok(board.render().await)
     }
 }
 
-async fn new_game_handler(
-    store: extract::State<StoreAccessor>,
-    cookies: Cookies,
-) -> WebResult<impl IntoResponse> {
-    let session = store.new_session(
-        &cookies,
+async fn new_game_handler(sessions: SessionManager) -> WebResult<impl IntoResponse> {
+    let session = sessions.create(
         BoardBuilder::square(10)
             .random(&[
                 ShipDefinition::new("Линкор", 4, 1),

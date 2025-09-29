@@ -69,6 +69,13 @@ pub mod errors {
 
     pub type WebResult<T> = Result<T, WebError>;
 
+    impl From<(StatusCode, &'static str)> for WebError {
+        fn from(value: (StatusCode, &'static str)) -> Self {
+            let (code, string) = value;
+            Self::internal(string.into()).code(code)
+        }
+    }
+
     // Anyhow integration
 
     impl From<anyhow::Error> for WebError {
