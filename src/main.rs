@@ -14,7 +14,7 @@ use maud::html;
 use pico_args::Arguments;
 use serde::Deserialize;
 use time::Duration;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_cookies::CookieManagerLayer;
 use tower_http::compression::CompressionLayer;
@@ -24,8 +24,6 @@ use crate::{
     session::{SessionManager, SessionOptionExt, Store},
     utils::{assets::asset_handler, errors::WebResult, shutdown},
 };
-
-type Dyn<T> = Arc<RwLock<T>>;
 
 // TODO: simplify
 #[derive(Deserialize)]

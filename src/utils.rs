@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use axum::{
     http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},

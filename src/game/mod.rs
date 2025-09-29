@@ -10,10 +10,10 @@ use tokio::sync::RwLock;
 
 use std::{collections::HashSet, fmt::Display, hash::Hash, ops::SubAssign, sync::Arc};
 
-use crate::{
-    Dyn,
-    utils::errors::{AnyhowWebExt, WebResult},
-};
+use crate::utils::errors::{AnyhowWebExt, WebResult};
+
+// TODO: how did we get here...
+type Dyn<T> = Arc<RwLock<T>>;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub struct Point {
