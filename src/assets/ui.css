@@ -82,6 +82,7 @@ body {
 
 .ship-counter.defeated {
     border: 5px dashed #001220;
+    transition: all ease-in 2s;
 }
 
 .cnt-row {
@@ -109,10 +110,12 @@ body {
 
 .cell.water {
     background-color: #0066FF;
+    transition: all ease-in 0.3s;
 }
 
 .cell.ship {
     background-color: #001220;
+    transition: all ease-in 0.3s;
 }
 
 .cell.active {
