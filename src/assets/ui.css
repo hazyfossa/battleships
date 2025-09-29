@@ -76,13 +76,14 @@ body {
     text-align: center;
     padding: 2vmin;
 
+    border: 5px dashed transparent;
     border-radius: 5px;
     background-color: #4FACF7;
 }
 
 .ship-counter.defeated {
-    border: 5px dashed #001220;
-    transition: all ease-in 2s;
+    border-color: #001220;
+    transition: border-color 2s;
 }
 
 .cnt-row {
