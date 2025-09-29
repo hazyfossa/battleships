@@ -13,6 +13,7 @@ use axum::{
 use maud::html;
 use pico_args::Arguments;
 use serde::Deserialize;
+use time::Duration;
 use tokio::{net::TcpListener, signal, sync::RwLock};
 use tower::ServiceBuilder;
 use tower_cookies::{CookieManagerLayer, Cookies};
@@ -20,11 +21,10 @@ use tower_http::compression::CompressionLayer;
 
 use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
-    store::StoreAccessor,
+    store::{Store, StoreAccessor},
     utils::{
         assets::asset_handler,
         errors::{AnyhowWebExt, WebResult},
-        scheduler,
     },
 };
 
@@ -121,15 +121,6 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
         .context("Failed to bind listener")
 }
 
-fn schedule_cleanup(store: StoreAccessor, interval: scheduler::Interval) {
-    scheduler::schedule_task("Board data cleanup", interval, move || {
-        let store = store.clone();
-        async move {
-            store.cleanup().await;
-        }
-    });
-}
-
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
@@ -164,8 +155,8 @@ async fn main() -> Result<()> {
     let mut args = Arguments::from_env();
     let listener = listener_from_args(&mut args).await?;
 
-    let store = Arc::new(store::Store::new());
-    schedule_cleanup(store.clone(), scheduler::Interval::days(1));
+    let store = Arc::new(Store::new(Duration::days(1)));
+    let store = store.with_cleanup();
 
     let router = Router::new()
         .route("/", get(app_handler))
