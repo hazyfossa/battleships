@@ -22,6 +22,7 @@ use crate::{
     game::{BoardBuilder, Point, ShipDefinition},
     store::StoreAccessor,
     utils::{
+        assets::asset_handler,
         errors::{AnyhowWebExt, WebResult},
         scheduler,
     },
@@ -41,16 +42,16 @@ async fn game_handler(
     extract::Query(data): extract::Query<RenderRequestData>,
 ) -> WebResult<impl IntoResponse> {
     // TODO: redirect to new game page instead of error
-    let (id, session) = store
+    let session = store
         .get_session(&cookies)
         .ok_or(anyhow!("Board not found").client_error())?;
 
     let board = session.board().await;
-
     board.hit(data.hit).await?;
 
     if board.is_win().await {
-        store.remove_session(id, &cookies).await;
+        drop(board);
+        store.remove_session(session, &cookies).await;
         Ok(game::ui::render_win())
     } else {
         Ok(board.render().await)
@@ -121,17 +122,13 @@ async fn listener_from_args(args: &mut Arguments) -> Result<TcpListener> {
         .context("Failed to bind listener")
 }
 
-fn schedule_cleanup(store: StoreAccessor) {
-    scheduler::schedule_task(
-        "Board data cleanup",
-        scheduler::Interval::days(1),
-        move || {
-            let store = store.clone();
-            async move {
-                store.cleanup().await;
-            }
-        },
-    );
+fn schedule_cleanup(store: StoreAccessor, interval: scheduler::Interval) {
+    scheduler::schedule_task("Board data cleanup", interval, move || {
+        let store = store.clone();
+        async move {
+            store.cleanup().await;
+        }
+    });
 }
 
 async fn shutdown_signal() {
@@ -169,13 +166,13 @@ async fn main() -> Result<()> {
     let listener = listener_from_args(&mut args).await?;
 
     let store = Arc::new(store::Store::new());
-    schedule_cleanup(store.clone());
+    schedule_cleanup(store.clone(), scheduler::Interval::days(1));
 
     let router = Router::new()
         .route("/", get(app_handler))
         .route("/game/new", post(new_game_handler))
         .route("/game", post(game_handler))
-        .route("/{*path}", get(utils::assets::asset_handler))
+        .route("/{*path}", get(asset_handler))
         .layer(
             ServiceBuilder::new()
                 .layer(CompressionLayer::new())

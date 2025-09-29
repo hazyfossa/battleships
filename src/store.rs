@@ -27,14 +27,18 @@ impl Session {
     }
 }
 
+type SessionRef<'a> = Ref<'a, SessionID, Session>;
+type SessionRefMut<'a> = RefMut<'a, SessionID, Session>;
+
 pub struct Store(DashMap<u16, Session>);
 
-impl Store {
+impl<'a> Store {
     pub fn new() -> Self {
         Self(DashMap::new())
     }
 
     fn get_vacant_id(&self) -> Option<SessionID> {
+        // TODO: optimize
         let mut rng = rand::rng();
         let mut id = rng.random::<SessionID>();
 
@@ -48,7 +52,7 @@ impl Store {
         None
     }
 
-    pub fn insert_new<'a>(&'a self, session: Session) -> Result<RefMut<'a, SessionID, Session>> {
+    pub fn insert_new(&'a self, session: Session) -> Result<SessionRefMut<'a>> {
         let id = self
             .get_vacant_id()
             .ok_or(anyhow!("Cannot create new session, memory full!"))?;
@@ -61,11 +65,7 @@ impl Store {
         Ok(session_ref)
     }
 
-    pub fn new_session<'a>(
-        &'a self,
-        cookies: &Cookies,
-        board: Board,
-    ) -> Result<RefMut<'a, SessionID, Session>> {
+    pub fn new_session(&'a self, cookies: &Cookies, board: Board) -> Result<SessionRefMut<'a>> {
         let now = OffsetDateTime::now_utc();
         let expires = now + Duration::days(1);
 
@@ -86,23 +86,24 @@ impl Store {
         Ok(session)
     }
 
-    pub fn get_session<'a>(
-        &'a self,
-        cookies: &Cookies,
-    ) -> Option<(SessionID, Ref<'a, SessionID, Session>)> {
+    pub fn get_session(&'a self, cookies: &Cookies) -> Option<SessionRef<'a>> {
         // TODO: maybe propagate parse error
         let id = cookies.get(SESSION_COOKIE_REF)?.value().parse().ok()?;
-        Some((id, self.0.get(&id)?))
+        Some(self.0.get(&id)?)
     }
 
-    pub async fn remove_session(&self, id: SessionID, cookies: &Cookies) {
+    pub async fn remove_session(&self, session: SessionRef<'a>, cookies: &Cookies) {
         cookies.remove(SESSION_COOKIE_REF.into());
+
+        let id = session.key().clone();
+        drop(session);
         self.0.remove(&id);
     }
 
     pub async fn cleanup(&self) {
         let now = UtcDateTime::now();
         self.0.retain(|_, entry| entry.expires >= now);
+
         tracing::info!("Cleaned up board data")
     }
 }
